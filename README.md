@@ -149,9 +149,47 @@ Response/acknowledgment returned from message dispatches:
 
 ---
 
-## 🤖 Android Foreground Service Setup
+### 3. Running Persistent Server in Background (Even When App is Killed)
 
-To enable the foreground service on Android, add the following to your `android/app/src/main/AndroidManifest.xml`:
+To run the server in a dedicated background isolate that continues listening on UDP even if the user closes or kills the app:
+
+```dart
+import 'package:flutter/material.dart';
+import 'package:shared_device_network/shared_device_network.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await SharedDeviceForegroundService.init();
+  runApp(const MyApp());
+}
+
+// Start persistent server in background isolate
+Future<void> startBackgroundServer() async {
+  final success = await SharedDeviceForegroundService.startBackgroundServer(
+    deviceId: 'server-pos-001',
+    deviceName: 'Kitchen POS Master',
+    deviceDescription: 'Kitchen order screen terminal',
+    port: 8888,
+    notificationTitle: 'POS Server Active',
+    notificationText: 'Listening for device orders in background...',
+  );
+}
+
+// Receive messages in UI when app is open
+void listenToBackgroundServerMessages() {
+  SharedDeviceForegroundService.addMessageCallback((data) {
+    if (data is Map && data['event'] == 'onDataReceived') {
+      print('Received from: ${data['senderDeviceId']}, Message: ${data['message']}');
+    }
+  });
+}
+```
+
+---
+
+## 🤖 Android Foreground Service Setup (Keeps Running When App Is Killed)
+
+To enable the foreground service to stay alive even when the app task is swiped away/killed by the user, configure `android:stopWithTask="false"` and add the required permissions in your `android/app/src/main/AndroidManifest.xml`:
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -164,11 +202,15 @@ To enable the foreground service on Android, add the following to your `android/
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application ...>
+        <!-- Notice stopWithTask="false" so Android does not kill the server service when the app is swiped away -->
         <service
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:foregroundServiceType="connectedDevice"
+            android:stopWithTask="false"
             android:exported="false" />
     </application>
 </manifest>

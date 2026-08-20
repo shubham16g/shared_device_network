@@ -1,8 +1,13 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_device_network/shared_device_network.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Initialize communication port for background task if on mobile
+  if (Platform.isAndroid || Platform.isIOS) {
+    await SharedDeviceForegroundService.init();
+  }
   runApp(const SharedDeviceApp());
 }
 
@@ -44,8 +49,9 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   late TabController _tabController;
 
   // Server state
-  SharedDeviceNetworkServer? _server;
+  SharedDeviceNetworkServer? _localServer;
   bool _isServerRunning = false;
+  bool _runInBackgroundService = true;
   final List<String> _serverLogs = [];
 
   // Client state
@@ -69,11 +75,39 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       deviceName: 'Waiter Tablet',
       defaultTimeout: const Duration(seconds: 4),
     );
+
+    // Listen for messages received by background isolate server
+    SharedDeviceForegroundService.addMessageCallback(_handleBackgroundServerData);
+    _checkServiceStatus();
+  }
+
+  Future<void> _checkServiceStatus() async {
+    final running = await SharedDeviceForegroundService.isRunning();
+    if (running && mounted) {
+      setState(() {
+        _isServerRunning = true;
+        _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] Background server is currently running.');
+      });
+    }
+  }
+
+  void _handleBackgroundServerData(Object data) {
+    if (data is Map) {
+      final map = Map<String, dynamic>.from(data);
+      if (map['event'] == 'onDataReceived') {
+        final sender = map['senderDeviceId'];
+        final msg = map['message'];
+        setState(() {
+          _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] (Background Server) From $sender: "$msg"');
+        });
+      }
+    }
   }
 
   @override
   void dispose() {
-    _server?.stop();
+    SharedDeviceForegroundService.removeMessageCallback(_handleBackgroundServerData);
+    _localServer?.stop();
     _client.dispose();
     _tabController.dispose();
     _serverPortController.dispose();
@@ -86,43 +120,70 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   // --- Server Actions ---
 
   Future<void> _toggleServer() async {
+    final port = int.tryParse(_serverPortController.text) ?? 8888;
+    final serverName = _serverNameController.text.trim();
+
     if (_isServerRunning) {
-      await _server?.stop();
+      if (_runInBackgroundService && (Platform.isAndroid || Platform.isIOS)) {
+        await SharedDeviceForegroundService.stopService();
+      } else {
+        await _localServer?.stop();
+      }
       setState(() {
         _isServerRunning = false;
         _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] Server stopped.');
       });
     } else {
-      final port = int.tryParse(_serverPortController.text) ?? 8888;
-      _server = SharedDeviceNetworkServer(
-        deviceId: 'server-pos-001',
-        deviceName: _serverNameController.text.trim(),
-        deviceDescription: 'Main Kitchen Display Station',
-        port: port,
-        requirePairKey: false,
-        onDataReceived: (senderDeviceId, message) async {
-          final logEntry = 'Received from $senderDeviceId: "$message"';
-          setState(() {
-            _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] $logEntry');
-          });
-          // Return ACK status with payload back to sender
-          return Status.success(
-            message: 'Order processed successfully by POS',
-            data: {'processedAt': DateTime.now().toIso8601String(), 'code': 100},
-          );
-        },
-      );
+      if (_runInBackgroundService && (Platform.isAndroid || Platform.isIOS)) {
+        // Start in persistent background isolate (keeps running even if app is killed!)
+        final started = await SharedDeviceForegroundService.startBackgroundServer(
+          deviceId: 'server-pos-001',
+          deviceName: serverName,
+          deviceDescription: 'Kitchen Display Station (Background)',
+          port: port,
+          notificationTitle: '$serverName Active',
+          notificationText: 'Listening on port $port (Keeps running when app is closed)',
+        );
 
-      try {
-        await _server!.start();
         setState(() {
-          _isServerRunning = true;
-          _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] Server listening on port $port');
+          _isServerRunning = started;
+          _serverLogs.insert(
+            0,
+            started
+                ? '[${DateTime.now().toIso8601String().substring(11, 19)}] Started in background foreground service (Persistent).'
+                : 'Failed to start background foreground service.',
+          );
         });
-      } catch (e) {
-        setState(() {
-          _serverLogs.insert(0, 'Error starting server: $e');
-        });
+      } else {
+        // Start as in-memory server
+        _localServer = SharedDeviceNetworkServer(
+          deviceId: 'server-pos-001',
+          deviceName: serverName,
+          deviceDescription: 'Main Kitchen Display Station',
+          port: port,
+          requirePairKey: false,
+          onDataReceived: (senderDeviceId, message) async {
+            setState(() {
+              _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] Received from $senderDeviceId: "$message"');
+            });
+            return Status.success(
+              message: 'Order processed successfully by POS',
+              data: {'processedAt': DateTime.now().toIso8601String(), 'code': 100},
+            );
+          },
+        );
+
+        try {
+          await _localServer!.start();
+          setState(() {
+            _isServerRunning = true;
+            _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] Server listening on port $port');
+          });
+        } catch (e) {
+          setState(() {
+            _serverLogs.insert(0, 'Error starting server: $e');
+          });
+        }
       }
     }
   }
@@ -232,6 +293,14 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                     border: OutlineInputBorder(),
                     isDense: true,
                   ),
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Keep running when app is killed'),
+                  subtitle: const Text('Uses persistent Android Foreground Service & background isolate'),
+                  value: _runInBackgroundService,
+                  onChanged: (val) => setState(() => _runInBackgroundService = val),
                 ),
                 const SizedBox(height: 16),
                 FilledButton.icon(
