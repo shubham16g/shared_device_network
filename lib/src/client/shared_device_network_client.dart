@@ -132,16 +132,31 @@ class SharedDeviceNetworkClient {
     }
   }
 
-  /// Handles a discovery response and caches the device.
+  /// Handles a discovery response and caches the devices.
   void _handleDiscoveryResponse(NetworkPacket packet, String senderIp, int senderPort) {
     if (packet.payload is Map) {
-      try {
-        final device = SharedDevice.fromMap(Map<String, dynamic>.from(packet.payload as Map));
-        final resolvedDevice = device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
-            ? device.copyWith(deviceIp: senderIp)
-            : device;
-        _knownDevices[resolvedDevice.deviceId] = resolvedDevice;
-      } catch (_) {}
+      final map = Map<String, dynamic>.from(packet.payload as Map);
+      if (map['devices'] is List) {
+        for (final item in (map['devices'] as List)) {
+          if (item is Map) {
+            try {
+              final device = SharedDevice.fromMap(Map<String, dynamic>.from(item));
+              final resolvedDevice = device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
+                  ? device.copyWith(deviceIp: senderIp)
+                  : device;
+              _knownDevices[resolvedDevice.deviceId] = resolvedDevice;
+            } catch (_) {}
+          }
+        }
+      } else {
+        try {
+          final device = SharedDevice.fromMap(map);
+          final resolvedDevice = device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
+              ? device.copyWith(deviceIp: senderIp)
+              : device;
+          _knownDevices[resolvedDevice.deviceId] = resolvedDevice;
+        } catch (_) {}
+      }
     }
   }
 
@@ -189,21 +204,31 @@ class SharedDeviceNetworkClient {
 
                 if (packet != null && packet.type == PacketType.discoveryResponse) {
                   if (packet.payload is Map) {
-                    try {
-                      final dev = SharedDevice.fromMap(
-                        Map<String, dynamic>.from(packet.payload as Map),
-                      );
-                      final resolved = dev.deviceIp.isEmpty || dev.deviceIp == '0.0.0.0'
-                          ? dev.copyWith(deviceIp: datagram.address.address)
-                          : dev;
-
-                      if (discoveredIds.add(resolved.deviceId)) {
-                        _knownDevices[resolved.deviceId] = resolved;
-                        if (!controller.isClosed) {
-                          controller.add(resolved);
-                        }
+                    final map = Map<String, dynamic>.from(packet.payload as Map);
+                    final List<Map<String, dynamic>> rawDevices = [];
+                    if (map['devices'] is List) {
+                      for (final d in (map['devices'] as List)) {
+                        if (d is Map) rawDevices.add(Map<String, dynamic>.from(d));
                       }
-                    } catch (_) {}
+                    } else if (map.containsKey('deviceId')) {
+                      rawDevices.add(map);
+                    }
+
+                    for (final raw in rawDevices) {
+                      try {
+                        final dev = SharedDevice.fromMap(raw);
+                        final resolved = dev.deviceIp.isEmpty || dev.deviceIp == '0.0.0.0'
+                            ? dev.copyWith(deviceIp: datagram.address.address)
+                            : dev;
+
+                        if (discoveredIds.add(resolved.deviceId)) {
+                          _knownDevices[resolved.deviceId] = resolved;
+                          if (!controller.isClosed) {
+                            controller.add(resolved);
+                          }
+                        }
+                      } catch (_) {}
+                    }
                   }
                 }
               }

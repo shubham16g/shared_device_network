@@ -4,6 +4,7 @@ library;
 export 'src/models/shared_device.dart';
 export 'src/models/status.dart';
 export 'src/models/paired_device.dart';
+export 'src/models/shared_device_record.dart';
 export 'src/models/network_packet.dart';
 
 // Server

@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
-import '../models/paired_device.dart';
+import '../models/shared_device_record.dart';
 import '../models/status.dart';
 import '../server/shared_device_network_server.dart';
 
@@ -16,7 +16,7 @@ void sharedDeviceNetworkServerCallback() {
 }
 
 /// A background [TaskHandler] that hosts a [SharedDeviceNetworkServer] in a background isolate,
-/// allowing it to stay active even when the application UI is minimized or killed.
+/// allowing shared connected devices to remain available across the network even when the UI is closed or killed.
 class SharedDeviceServerTaskHandler extends TaskHandler {
   SharedDeviceNetworkServer? _server;
   int _receivedCount = 0;
@@ -24,32 +24,22 @@ class SharedDeviceServerTaskHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
     // 1. Read persistent configuration from Task storage
-    final deviceId = (await FlutterForegroundTask.getData<String>(key: 'server_deviceId')) ?? 'background-server';
-    final deviceName = (await FlutterForegroundTask.getData<String>(key: 'server_deviceName')) ?? 'Shared Device Background Server';
-    final deviceDescription = await FlutterForegroundTask.getData<String>(key: 'server_deviceDescription');
     final port = (await FlutterForegroundTask.getData<int>(key: 'server_port')) ?? 8888;
     final discoveryPort = (await FlutterForegroundTask.getData<int>(key: 'server_discoveryPort')) ?? 8889;
-    final requirePairKey = (await FlutterForegroundTask.getData<bool>(key: 'server_requirePairKey')) ?? false;
-    final defaultPairKey = await FlutterForegroundTask.getData<String>(key: 'server_defaultPairKey');
-    final pairedJson = await FlutterForegroundTask.getData<String>(key: 'server_pairedDevices');
+    final devicesJson = await FlutterForegroundTask.getData<String>(key: 'server_devices');
 
-    // 2. Instantiate and start UDP server inside background isolate
+    // 2. Instantiate UDP server inside background isolate
     _server = SharedDeviceNetworkServer(
-      deviceId: deviceId,
-      deviceName: deviceName,
-      deviceDescription: deviceDescription,
       port: port,
       discoveryPort: discoveryPort,
-      requirePairKey: requirePairKey,
-      defaultPairKey: defaultPairKey,
-      onDataReceived: (senderDeviceId, message) async {
+      onDataReceived: (deviceId, message) async {
         _receivedCount++;
 
         // Notify main UI isolate if running
         try {
           FlutterForegroundTask.sendDataToMain({
             'event': 'onDataReceived',
-            'senderDeviceId': senderDeviceId,
+            'deviceId': deviceId,
             'message': message,
             'timestamp': DateTime.now().toIso8601String(),
             'totalCount': _receivedCount,
@@ -59,34 +49,35 @@ class SharedDeviceServerTaskHandler extends TaskHandler {
         // Update Android notification text
         try {
           await FlutterForegroundTask.updateService(
-            notificationTitle: '$deviceName Active',
-            notificationText: 'Messages received: $_receivedCount (Last from: $senderDeviceId)',
+            notificationTitle: 'Shared Device Server Active',
+            notificationText: 'Messages received: $_receivedCount (Last for: $deviceId)',
           );
         } catch (_) {}
 
         return Status.success(
-          message: 'Received by background server',
+          message: 'Received by background server for device $deviceId',
           data: {
-            'processedBy': deviceId,
+            'deviceId': deviceId,
             'timestamp': DateTime.now().toIso8601String(),
           },
         );
       },
     );
 
-    // 3. Load pre-configured paired devices
-    if (pairedJson != null && pairedJson.isNotEmpty) {
+    // 3. Load pre-configured shared devices
+    if (devicesJson != null && devicesJson.isNotEmpty) {
       try {
-        final dynamic list = json.decode(pairedJson);
+        final dynamic list = json.decode(devicesJson);
         if (list is List) {
           for (final item in list) {
             if (item is Map) {
-              final paired = PairedDevice.fromMap(Map<String, dynamic>.from(item));
+              final dev = SharedDeviceRecord.fromMap(Map<String, dynamic>.from(item));
               await _server!.addDevice(
-                paired.deviceId,
-                paired.deviceName,
-                deviceDescription: paired.deviceDescription,
-                pairKey: paired.pairKey,
+                dev.deviceId,
+                dev.deviceName,
+                deviceDescription: dev.deviceDescription,
+                pairKey: dev.pairKey,
+                metadata: dev.metadata,
               );
             }
           }
@@ -95,14 +86,16 @@ class SharedDeviceServerTaskHandler extends TaskHandler {
     }
 
     try {
-      await _server!.start();
+      if (_server!.deviceCount > 0) {
+        await _server!.start();
+      }
     } catch (_) {}
   }
 
   @override
   void onRepeatEvent(DateTime timestamp) {
-    // Health check - ensure server is running
-    if (_server != null && !_server!.isRunning) {
+    // Health check - ensure server is running if devices exist
+    if (_server != null && _server!.deviceCount > 0 && !_server!.isRunning) {
       _server!.start();
     }
   }
@@ -127,16 +120,36 @@ class SharedDeviceServerTaskHandler extends TaskHandler {
       final devName = map['deviceName']?.toString() ?? '';
       final desc = map['deviceDescription']?.toString();
       final key = map['pairKey']?.toString();
+      Map<String, dynamic>? meta;
+      if (map['metadata'] is Map) {
+        meta = Map<String, dynamic>.from(map['metadata'] as Map);
+      }
+
       if (devId.isNotEmpty) {
-        await _server!.addDevice(devId, devName, deviceDescription: desc, pairKey: key);
+        await _server!.addDevice(
+          devId,
+          devName,
+          deviceDescription: desc,
+          pairKey: key,
+          metadata: meta,
+        );
+        _persistCurrentDevices();
       }
     } else if (action == 'removeDevice') {
       final devId = map['deviceId']?.toString() ?? '';
       if (devId.isNotEmpty) {
         await _server!.removeDevice(devId);
+        _persistCurrentDevices();
       }
     } else if (action == 'stopServer') {
       await _server!.stop();
+    }
+  }
+
+  void _persistCurrentDevices() {
+    if (_server != null) {
+      final list = _server!.devices.map((d) => d.toMap()).toList();
+      FlutterForegroundTask.saveData(key: 'server_devices', value: json.encode(list));
     }
   }
 }
@@ -186,18 +199,13 @@ class SharedDeviceForegroundService {
 
   /// Starts the UDP server in a dedicated background foreground task isolate.
   ///
-  /// This server stays active even if the main Flutter UI application is closed or killed.
+  /// This server stays active and keeps sharing devices even if the main Flutter UI is closed or killed.
   static Future<bool> startBackgroundServer({
-    required String deviceId,
-    required String deviceName,
-    String? deviceDescription,
     int port = 8888,
     int discoveryPort = 8889,
-    bool requirePairKey = false,
-    String? defaultPairKey,
-    List<PairedDevice>? pairedDevices,
+    List<SharedDeviceRecord>? initialDevices,
     String notificationTitle = 'Shared Device Server Active',
-    String notificationText = 'Listening for incoming device connections in background...',
+    String notificationText = 'Sharing connected devices in background...',
   }) async {
     if (!Platform.isAndroid && !Platform.isIOS) {
       return true;
@@ -216,20 +224,11 @@ class SharedDeviceForegroundService {
     }
 
     // 2. Persist configuration for the background isolate
-    await FlutterForegroundTask.saveData(key: 'server_deviceId', value: deviceId);
-    await FlutterForegroundTask.saveData(key: 'server_deviceName', value: deviceName);
-    if (deviceDescription != null) {
-      await FlutterForegroundTask.saveData(key: 'server_deviceDescription', value: deviceDescription);
-    }
     await FlutterForegroundTask.saveData(key: 'server_port', value: port);
     await FlutterForegroundTask.saveData(key: 'server_discoveryPort', value: discoveryPort);
-    await FlutterForegroundTask.saveData(key: 'server_requirePairKey', value: requirePairKey);
-    if (defaultPairKey != null) {
-      await FlutterForegroundTask.saveData(key: 'server_defaultPairKey', value: defaultPairKey);
-    }
-    if (pairedDevices != null && pairedDevices.isNotEmpty) {
-      final jsonList = json.encode(pairedDevices.map((d) => d.toMap()).toList());
-      await FlutterForegroundTask.saveData(key: 'server_pairedDevices', value: jsonList);
+    if (initialDevices != null && initialDevices.isNotEmpty) {
+      final jsonList = json.encode(initialDevices.map((d) => d.toMap()).toList());
+      await FlutterForegroundTask.saveData(key: 'server_devices', value: jsonList);
     }
 
     // 3. Start or restart the foreground service with the entrypoint callback
@@ -284,12 +283,13 @@ class SharedDeviceForegroundService {
     FlutterForegroundTask.sendDataToTask(data);
   }
 
-  /// Adds a device to the running background server whitelist.
+  /// Adds a shared device to the running background server.
   static void addDeviceToBackgroundServer({
     required String deviceId,
     required String deviceName,
     String? deviceDescription,
     String? pairKey,
+    Map<String, dynamic>? metadata,
   }) {
     sendDataToBackgroundServer({
       'action': 'addDevice',
@@ -297,10 +297,11 @@ class SharedDeviceForegroundService {
       'deviceName': deviceName,
       if (deviceDescription != null) 'deviceDescription': deviceDescription,
       if (pairKey != null) 'pairKey': pairKey,
+      if (metadata != null) 'metadata': metadata,
     });
   }
 
-  /// Removes a device from the running background server whitelist.
+  /// Removes a shared device from the running background server.
   static void removeDeviceFromBackgroundServer(String deviceId) {
     sendDataToBackgroundServer({
       'action': 'removeDevice',

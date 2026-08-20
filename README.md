@@ -1,23 +1,38 @@
 # Shared Device Network (`shared_device_network`)
 
-A high-performance Flutter and Dart package for local UDP device discovery, incremental ACK messaging, paired device authorization, and foreground service background execution.
+A Flutter and Dart package for sharing connected hardware/peripheral devices (e.g. Bluetooth printers, USB barcode scanners, cash drawers, secondary screens) over the local WiFi/LAN network using UDP discovery, incremental ACK messaging, per-device pairing authorization, and foreground service background execution.
+
+---
+
+## 💡 Concept & Architecture
+
+1. **One UDP Server per Host Device / Phone**:
+   - The phone or host machine runs **one** UDP server.
+   - The phone has locally connected peripherals (e.g. Bluetooth Receipt Printer, USB Scanner).
+2. **Sharing Connected Devices via `addDevice`**:
+   - Calling `addDevice('printer-1', 'Bluetooth Printer')` registers the peripheral and **automatically starts the UDP server**.
+   - Calling `addDevice('scanner-1', 'Barcode Scanner')` again appends the new peripheral to the running server.
+3. **Multi-Device Discovery on Client**:
+   - When a client broadcasts a discovery request, the host server responds with **all** its currently shared connected devices.
+   - The client discovers 1 UDP server host, but its discovery stream emits **2 separate `SharedDevice` records**!
+4. **Auto-Stop on Removal**:
+   - Calling `removeDevice('printer-1')` removes the device.
+   - When all shared devices are removed, the UDP server **automatically stops**.
 
 ---
 
 ## 🚀 Features
 
-- **📡 Zero-Config UDP Discovery**: Discover devices on the local WiFi/LAN subnet or universal broadcast with a simple stream or single-shot method.
-- **🔢 Incremental Message IDs & Reliable ACKs**: Automatically tracks every sent message with an incremental ID, waits for an acknowledgment (ACK), and returns a structured `Status` object.
-- **⏱️ Configurable Timeout Handling**: Automatic timeout detection when targets are unreachable or fail to acknowledge within the threshold.
-- **🔐 Device Pairing & Authorization**: Secure your server by registering authorized devices (`addDevice`, `removeDevice`) and verifying pair keys.
-- **📱 Foreground Service Support**: Integrated with `flutter_foreground_task` to keep the UDP listener active continuously in the background on mobile devices.
-- **🌐 Cross-Platform**: Runs natively on Android, iOS, Windows, macOS, and Linux.
+- **📡 Multi-Device UDP Discovery**: Emits all shared connected devices hosted on a machine/phone to discovering clients.
+- **⚡ Automatic Lifecycle Management**: UDP server auto-starts on the first `addDevice()` and auto-stops when the last device is removed.
+- **🔢 Incremental Message IDs & Reliable ACKs**: Tracks message transmission with incremental IDs and returns structured `Status` responses.
+- **🔐 Per-Device Pairing & Authorization**: Optional `pairKey` per shared device.
+- **📱 Persistent Background Isolate**: Keeps the server running and peripherals shared even when the app UI is closed or killed.
+- **🌐 Cross-Platform**: Android, iOS, Windows, macOS, Linux.
 
 ---
 
 ## 📦 Installation
-
-Add `shared_device_network` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
@@ -28,51 +43,53 @@ dependencies:
 
 ## 🛠️ Usage
 
-### 1. Starting a Network Server
+### 1. Host Phone: Sharing Connected Devices
 
 ```dart
 import 'package:shared_device_network/shared_device_network.dart';
 
 void main() async {
   final server = SharedDeviceNetworkServer(
-    deviceId: 'server-pos-001',
-    deviceName: 'Kitchen POS Master',
-    deviceDescription: 'Kitchen order screen terminal',
     port: 8888,
     discoveryPort: 8889,
-    requirePairKey: true,
-    onDataReceived: (senderDeviceId, message) async {
-      print('Received from $senderDeviceId: $message');
-      
-      // Process the message (e.g. print receipt, save order, etc.)
-      return Status.success(
-        message: 'Order received and queued for cooking',
-        data: {'orderId': 1042, 'estimatedMinutes': 15},
-      );
+    onDataReceived: (deviceId, message) async {
+      print('Received command for device $deviceId: $message');
+
+      if (deviceId == 'printer-bt-01') {
+        // Forward print bytes to Bluetooth printer
+        return Status.success(message: 'Receipt printed successfully');
+      } else if (deviceId == 'scanner-usb-01') {
+        // Trigger barcode scan
+        return Status.success(message: 'Scan triggered', data: {'barcode': '890123456789'});
+      }
+
+      return Status.deviceNotFound();
     },
   );
 
-  // Add authorized devices
+  // 1. Add first device -> Automatically starts the UDP server
   await server.addDevice(
-    'waiter-tablet-01',
-    'Waiter Tablet #1',
-    pairKey: 'secret_key_123',
+    'printer-bt-01',
+    'Kitchen Bluetooth Printer',
+    deviceDescription: 'Thermal 80mm ESC/POS printer',
   );
 
-  // Start listening on UDP sockets
-  await server.start();
-  
-  // Or start with Android foreground notification:
-  // await server.startWithForegroundService(
-  //   notificationTitle: 'POS Server Running',
-  //   notificationText: 'Listening for incoming order transmissions...',
-  // );
+  // 2. Add second device -> Appends to existing running server
+  await server.addDevice(
+    'scanner-usb-01',
+    'Counter Barcode Scanner',
+    pairKey: 'scanner-key-123',
+  );
+
+  // 3. Remove a device (Server auto-stops when all devices are removed)
+  // await server.removeDevice('printer-bt-01');
+  // await server.removeDevice('scanner-usb-01'); // Server stops automatically
 }
 ```
 
 ---
 
-### 2. Discovering Devices & Sending Messages from Client
+### 2. Client Device: Discovering & Sending to Shared Devices
 
 ```dart
 import 'package:shared_device_network/shared_device_network.dart';
@@ -81,77 +98,39 @@ void main() async {
   final client = SharedDeviceNetworkClient(
     deviceId: 'waiter-tablet-01',
     deviceName: 'Waiter Tablet #1',
-    defaultTimeout: Duration(seconds: 5),
+    defaultTimeout: Duration(seconds: 4),
   );
 
-  // --- Option A: Discover devices on local network ---
-  final discoveredDevices = await client.discoverDevicesOnce();
-  for (final device in discoveredDevices) {
-    print('Found: ${device.deviceName} at ${device.deviceIp}:${device.devicePort}');
+  // Discover all shared devices across the network
+  final devices = await client.discoverDevicesOnce();
+  for (final device in devices) {
+    print('Found: ${device.deviceName} (ID: ${device.deviceId}) at ${device.deviceIp}:${device.devicePort}');
   }
 
-  // --- Option B: Listen to real-time discovery stream ---
-  client.discoverDevices().listen((device) {
-    print('Discovered device in real-time: ${device.deviceName}');
-  });
-
-  // --- Sending message to device with incremental ID & ACK ---
-  final status = await client.sendToDevice(
-    'server-pos-001',
-    {'action': 'PLACE_ORDER', 'table': 4, 'items': ['Burger', 'Fries']},
-    pairKey: 'secret_key_123',
-    timeout: Duration(seconds: 4),
+  // Send print job to the Bluetooth Printer
+  final printStatus = await client.sendToDevice(
+    'printer-bt-01',
+    {'cmd': 'PRINT_BILL', 'table': 4, 'total': 45.50},
   );
 
-  if (status.isSuccess) {
-    print('✅ Message delivered and ACKed: ${status.message}');
-    print('Response Data: ${status.data}');
-  } else {
-    print('❌ Failed (${status.statusCode}): ${status.error} - ${status.message}');
+  if (printStatus.isSuccess) {
+    print('✅ Printed: ${printStatus.message}');
   }
+
+  // Send command to the Barcode Scanner with pairKey
+  final scanStatus = await client.sendToDevice(
+    'scanner-usb-01',
+    {'cmd': 'TRIGGER_SCAN'},
+    pairKey: 'scanner-key-123',
+  );
+
+  print('Scan Result: ${scanStatus.data}');
 }
 ```
 
 ---
 
-## 📋 Core Classes
-
-### `SharedDevice`
-Represents a device discovered or connected across the network:
-- `deviceId` (`String`): Unique identifier of the device.
-- `deviceName` (`String`): Human-readable device name.
-- `deviceDescription` (`String?`): Description or role of the device.
-- `deviceIp` (`String`): IP address on the local network.
-- `devicePort` (`int`): UDP port number for data communication.
-- `metadata` (`Map<String, dynamic>?`): Optional custom metadata.
-
-### `Status`
-Response/acknowledgment returned from message dispatches:
-- `isSuccess` (`bool`): Whether the operation succeeded.
-- `statusCode` (`int`): Code (`200`, `400`, `401`, `404`, `408`, `500`).
-- `message` (`String`): Descriptive message.
-- `data` (`dynamic`): Payload data returned by the recipient.
-- `error` (`String?`): Error identifier (`TIMEOUT`, `UNAUTHORIZED`, `DEVICE_NOT_FOUND`, etc.).
-
-### `SharedDeviceNetworkServer`
-- `addDevice(deviceId, deviceName, {deviceDescription, pairKey})`: Registers an authorized client.
-- `removeDevice(deviceId)`: Removes an authorized client.
-- `start()`: Binds data and discovery UDP sockets.
-- `stop()`: Closes sockets and releases ports.
-- `startWithForegroundService(...)`: Starts the server with an Android/iOS foreground notification.
-
-### `SharedDeviceNetworkClient`
-- `discoverDevices({timeout, discoveryPort})`: Returns a `Stream<SharedDevice>`.
-- `discoverDevicesOnce({timeout, discoveryPort})`: Returns `Future<List<SharedDevice>>`.
-- `sendToDevice(deviceId, message, {pairKey, timeout, targetDevice, ip, port})`: Sends message with incremental ID and waits for ACK.
-- `sendToDeivce(...)`: Alias for `sendToDevice`.
-- `sendToAddress(ip, port, message, ...)`: Sends directly to IP and Port.
-
----
-
-### 3. Running Persistent Server in Background (Even When App is Killed)
-
-To run the server in a dedicated background isolate that continues listening on UDP even if the user closes or kills the app:
+### 3. Persistent Background Service (Keeps Running When App Is Killed)
 
 ```dart
 import 'package:flutter/material.dart';
@@ -164,36 +143,32 @@ void main() async {
 }
 
 // Start persistent server in background isolate
-Future<void> startBackgroundServer() async {
-  final success = await SharedDeviceForegroundService.startBackgroundServer(
-    deviceId: 'server-pos-001',
-    deviceName: 'Kitchen POS Master',
-    deviceDescription: 'Kitchen order screen terminal',
+Future<void> startBackgroundHost() async {
+  await SharedDeviceForegroundService.startBackgroundServer(
     port: 8888,
-    notificationTitle: 'POS Server Active',
-    notificationText: 'Listening for device orders in background...',
+    initialDevices: [
+      SharedDeviceRecord(
+        deviceId: 'printer-bt-01',
+        deviceName: 'Kitchen Bluetooth Printer',
+      ),
+      SharedDeviceRecord(
+        deviceId: 'scanner-usb-01',
+        deviceName: 'Counter Scanner',
+        pairKey: 'secret123',
+      ),
+    ],
   );
-}
-
-// Receive messages in UI when app is open
-void listenToBackgroundServerMessages() {
-  SharedDeviceForegroundService.addMessageCallback((data) {
-    if (data is Map && data['event'] == 'onDataReceived') {
-      print('Received from: ${data['senderDeviceId']}, Message: ${data['message']}');
-    }
-  });
 }
 ```
 
 ---
 
-## 🤖 Android Foreground Service Setup (Keeps Running When App Is Killed)
+## 🤖 Android Foreground Service Setup
 
-To enable the foreground service to stay alive even when the app task is swiped away/killed by the user, configure `android:stopWithTask="false"` and add the required permissions in your `android/app/src/main/AndroidManifest.xml`:
+In `android/app/src/main/AndroidManifest.xml`:
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Permissions required for UDP and Foreground Service -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -206,7 +181,6 @@ To enable the foreground service to stay alive even when the app task is swiped 
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application ...>
-        <!-- Notice stopWithTask="false" so Android does not kill the server service when the app is swiped away -->
         <service
             android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
             android:foregroundServiceType="connectedDevice"
@@ -219,8 +193,6 @@ To enable the foreground service to stay alive even when the app task is swiped 
 ---
 
 ## 🧪 Testing
-
-Run automated tests:
 
 ```bash
 flutter test

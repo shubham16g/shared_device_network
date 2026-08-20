@@ -2,131 +2,141 @@ import 'dart:async';
 import 'dart:io';
 
 import '../models/network_packet.dart';
-import '../models/paired_device.dart';
 import '../models/shared_device.dart';
+import '../models/shared_device_record.dart';
 import '../models/status.dart';
 import '../utils/network_utils.dart';
 import '../service/foreground_service_helper.dart';
-import 'server_config.dart';
 
-/// Callback invoked when a message is received from a device.
+/// Callback invoked when a message is received for a shared connected device.
 typedef OnDataReceivedCallback = Future<Status> Function(
   String deviceId,
   dynamic message,
 );
 
-/// A UDP server that provides local network discovery, paired device management,
-/// and incremental ACK message handling with optional foreground service execution.
+/// A UDP server running on a host device that shares local connected peripherals
+/// (e.g. Bluetooth printers, USB scanners, cash drawers) across the local network.
+///
+/// Calling [addDevice] registers a shared connected device and automatically starts the UDP server.
+/// Calling [removeDevice] removes the device, and automatically stops the UDP server when all devices are removed.
 class SharedDeviceNetworkServer {
-  /// Unique identifier of this server device.
-  final String deviceId;
-
-  /// Human-readable name of this server device.
-  final String deviceName;
-
-  /// Optional description for this server device.
-  final String? deviceDescription;
-
-  /// Main UDP data port.
+  /// Main UDP data port for receiving messages and sending ACKs (default: 8888).
   final int port;
 
-  /// UDP discovery port.
+  /// UDP discovery port for listening to client broadcast discovery (default: 8889).
   final int discoveryPort;
 
-  /// Optional default pair key.
-  final String? defaultPairKey;
-
-  /// Whether registration / pair key is required to accept incoming messages.
-  final bool requirePairKey;
-
-  /// Callback executed when data is received from a client device.
+  /// Callback executed when data is received from a client for any hosted device.
   final OnDataReceivedCallback onDataReceived;
 
-  /// Metadata included in discovery responses.
-  final Map<String, dynamic>? metadata;
+  /// Whether to automatically start listening when the first device is added (default: true).
+  final bool autoStartOnFirstDevice;
+
+  /// Whether to automatically stop the server when all devices are removed (default: true).
+  final bool autoStopOnEmptyDevices;
+
+  /// Whether to use the Android/iOS foreground service when running (default: false).
+  final bool enableForegroundService;
+
+  /// Notification title when foreground service is active.
+  final String notificationTitle;
+
+  /// Notification text when foreground service is active.
+  final String notificationText;
 
   RawDatagramSocket? _dataSocket;
   RawDatagramSocket? _discoverySocket;
   bool _isRunning = false;
 
-  /// Map of paired/whitelisted devices keyed by deviceId.
-  final Map<String, PairedDevice> _pairedDevices = {};
+  /// Map of shared connected devices hosted on this server, keyed by deviceId.
+  final Map<String, SharedDeviceRecord> _devices = {};
 
-  /// Controller for broadcasting received messages to listeners if needed.
+  /// Controller for broadcasting received messages to listeners.
   final _messageStreamController = StreamController<NetworkPacket>.broadcast();
 
   SharedDeviceNetworkServer({
     required this.onDataReceived,
-    this.deviceId = '',
-    this.deviceName = 'SharedDeviceServer',
-    this.deviceDescription,
     this.port = 8888,
     this.discoveryPort = 8889,
-    this.requirePairKey = false,
-    this.defaultPairKey,
-    this.metadata,
+    this.autoStartOnFirstDevice = true,
+    this.autoStopOnEmptyDevices = true,
+    this.enableForegroundService = false,
+    this.notificationTitle = 'Shared Device Server Active',
+    this.notificationText = 'Sharing connected devices on network...',
   });
 
-  /// Creates a [SharedDeviceNetworkServer] with a [ServerConfig] object.
-  factory SharedDeviceNetworkServer.fromConfig({
-    required OnDataReceivedCallback onDataReceived,
-    required String deviceId,
-    required String deviceName,
-    String? deviceDescription,
-    ServerConfig config = const ServerConfig(),
-    Map<String, dynamic>? metadata,
-  }) {
-    return SharedDeviceNetworkServer(
-      onDataReceived: onDataReceived,
-      deviceId: deviceId,
-      deviceName: deviceName,
-      deviceDescription: deviceDescription,
-      port: config.port,
-      discoveryPort: config.discoveryPort,
-      requirePairKey: config.requirePairing,
-      defaultPairKey: config.defaultPairKey,
-      metadata: metadata,
-    );
-  }
-
-  /// Whether the UDP server is currently running.
+  /// Whether the UDP server is currently running and listening on sockets.
   bool get isRunning => _isRunning;
 
-  /// List of currently paired/authorized devices.
-  List<PairedDevice> get pairedDevices => _pairedDevices.values.toList();
+  /// List of currently registered shared connected devices.
+  List<SharedDeviceRecord> get devices => _devices.values.toList();
 
-  /// Stream of all valid incoming network packets received by this server.
+  /// Total count of shared connected devices hosted on this server.
+  int get deviceCount => _devices.length;
+
+  /// Stream of incoming valid packets.
   Stream<NetworkPacket> get messageStream => _messageStreamController.stream;
 
-  /// Adds an authorized device to the server's paired list.
+  /// Adds a shared connected device to this server.
+  ///
+  /// If the server is not yet running and [autoStartOnFirstDevice] is true,
+  /// this automatically starts the UDP server.
   Future<bool> addDevice(
     String deviceId,
     String deviceName, {
     String? deviceDescription,
     String? pairKey,
+    Map<String, dynamic>? metadata,
   }) async {
     if (deviceId.trim().isEmpty) return false;
-    _pairedDevices[deviceId] = PairedDevice(
+
+    _devices[deviceId] = SharedDeviceRecord(
       deviceId: deviceId,
       deviceName: deviceName,
       deviceDescription: deviceDescription,
-      pairKey: pairKey ?? defaultPairKey,
+      pairKey: pairKey,
+      metadata: metadata,
       addedAt: DateTime.now(),
     );
+
+    // Auto-start server if not already running
+    if (!_isRunning && autoStartOnFirstDevice) {
+      if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+        await startWithForegroundService(
+          notificationTitle: notificationTitle,
+          notificationText: notificationText,
+        );
+      } else {
+        await start();
+      }
+    }
+
     return true;
   }
 
-  /// Removes an authorized device from the paired list.
+  /// Removes a shared connected device from this server.
+  ///
+  /// If all devices have been removed and [autoStopOnEmptyDevices] is true,
+  /// this automatically stops the UDP server.
   Future<bool> removeDevice(String deviceId) async {
-    final removed = _pairedDevices.remove(deviceId);
-    return removed != null;
+    final removed = _devices.remove(deviceId);
+    if (removed != null) {
+      if (_devices.isEmpty && _isRunning && autoStopOnEmptyDevices) {
+        if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+          await stopForegroundService();
+        }
+        await stop();
+      }
+      return true;
+    }
+    return false;
   }
 
-  /// Checks if a device is registered/paired.
-  bool isDevicePaired(String deviceId) => _pairedDevices.containsKey(deviceId);
+  /// Checks if a device ID is hosted on this server.
+  bool hasDevice(String deviceId) => _devices.containsKey(deviceId);
 
-  /// Retrieves a paired device entry.
-  PairedDevice? getPairedDevice(String deviceId) => _pairedDevices[deviceId];
+  /// Retrieves a registered shared device record.
+  SharedDeviceRecord? getDevice(String deviceId) => _devices[deviceId];
 
   /// Starts listening for UDP discovery and data messages.
   Future<void> start() async {
@@ -162,15 +172,15 @@ class SharedDeviceNetworkServer {
     }
   }
 
-  /// Starts the server and automatically manages an Android/iOS foreground service.
+  /// Starts the server with an Android/iOS foreground service.
   Future<bool> startWithForegroundService({
-    String notificationTitle = 'Shared Device Server Active',
-    String notificationText = 'Listening for incoming device connections...',
+    String? notificationTitle,
+    String? notificationText,
   }) async {
     await start();
     return await SharedDeviceForegroundService.startService(
-      notificationTitle: notificationTitle,
-      notificationText: notificationText,
+      notificationTitle: notificationTitle ?? this.notificationTitle,
+      notificationText: notificationText ?? this.notificationText,
     );
   }
 
@@ -179,7 +189,7 @@ class SharedDeviceNetworkServer {
     return await SharedDeviceForegroundService.stopService();
   }
 
-  /// Handles incoming datagrams on the main data socket.
+  /// Handles incoming datagrams on the data socket.
   void _handleDataSocketEvent(RawSocketEvent event) {
     if (event == RawSocketEvent.read && _dataSocket != null) {
       final datagram = _dataSocket!.receive();
@@ -199,7 +209,7 @@ class SharedDeviceNetworkServer {
     }
   }
 
-  /// Processes an incoming datagram from either socket.
+  /// Processes an incoming datagram.
   Future<void> _processIncomingDatagram(
     Datagram datagram,
     RawDatagramSocket sourceSocket,
@@ -215,11 +225,6 @@ class SharedDeviceNetworkServer {
 
     if (packet == null) return;
 
-    // Ignore self messages if loopback/broadcasted
-    if (packet.senderDeviceId.isNotEmpty && packet.senderDeviceId == deviceId) {
-      return;
-    }
-
     switch (packet.type) {
       case PacketType.discoveryRequest:
         await _handleDiscoveryRequest(packet, datagram.address, senderPort);
@@ -230,104 +235,125 @@ class SharedDeviceNetworkServer {
         break;
 
       case PacketType.ack:
-        // Pass to stream in case anyone listens
         _messageStreamController.add(packet);
         break;
 
       case PacketType.discoveryResponse:
-        // Typically handled by clients
         break;
     }
   }
 
-  /// Responds to a discovery request with this server's SharedDevice information.
+  /// Responds to a discovery request with all active shared connected devices on this server.
   Future<void> _handleDiscoveryRequest(
     NetworkPacket packet,
     InternetAddress remoteAddress,
     int remotePort,
   ) async {
-    // If request targeted a specific device ID and it's not ours, ignore
-    if (packet.targetDeviceId != null &&
-        packet.targetDeviceId!.isNotEmpty &&
-        packet.targetDeviceId != deviceId) {
-      return;
-    }
+    // If no devices are shared on this server, do not announce
+    if (_devices.isEmpty) return;
 
     final localIp = await NetworkUtils.getPrimaryLocalIPv4();
-    final response = NetworkPacket.discoveryResponse(
-      senderDeviceId: deviceId,
-      senderDeviceName: deviceName,
-      deviceDescription: deviceDescription,
-      deviceIp: localIp,
-      devicePort: port,
-      metadata: metadata,
-    );
-
     final replyPort = packet.senderPort != null && packet.senderPort! > 0
         ? packet.senderPort!
         : remotePort;
 
+    // Check if request was targeted at a specific device ID
+    final targetedId = packet.targetDeviceId;
+    final List<Map<String, dynamic>> devicesToAnnounce = [];
+
+    if (targetedId != null && targetedId.isNotEmpty) {
+      final single = _devices[targetedId];
+      if (single != null) {
+        devicesToAnnounce.add(SharedDevice(
+          deviceId: single.deviceId,
+          deviceName: single.deviceName,
+          deviceDescription: single.deviceDescription,
+          deviceIp: localIp,
+          devicePort: port,
+          metadata: single.metadata,
+        ).toMap());
+      }
+    } else {
+      for (final dev in _devices.values) {
+        devicesToAnnounce.add(SharedDevice(
+          deviceId: dev.deviceId,
+          deviceName: dev.deviceName,
+          deviceDescription: dev.deviceDescription,
+          deviceIp: localIp,
+          devicePort: port,
+          metadata: dev.metadata,
+        ).toMap());
+      }
+    }
+
+    if (devicesToAnnounce.isEmpty) return;
+
+    final response = NetworkPacket(
+      type: PacketType.discoveryResponse,
+      senderDeviceId: 'server-host',
+      payload: {
+        'devices': devicesToAnnounce,
+      },
+    );
+
     _sendPacketDirect(response, remoteAddress, replyPort);
   }
 
-  /// Handles incoming data message, executes callback, and replies with ACK packet.
+  /// Handles incoming data message, routes it to the specific deviceId, and sends back ACK.
   Future<void> _handleMessage(
     NetworkPacket packet,
     InternetAddress remoteAddress,
     int remotePort,
   ) async {
     final messageId = packet.messageId;
+    final targetId = packet.targetDeviceId;
     final senderId = packet.senderDeviceId;
 
     if (messageId == null) return;
 
-    // Direct targeted check
-    if (packet.targetDeviceId != null &&
-        packet.targetDeviceId!.isNotEmpty &&
-        packet.targetDeviceId != deviceId) {
+    SharedDeviceRecord? matchedDevice;
+
+    if (targetId != null && targetId.isNotEmpty) {
+      matchedDevice = _devices[targetId];
+      if (matchedDevice == null) {
+        final notFoundStatus = Status.deviceNotFound(
+          message: 'Device "$targetId" is not hosted on this server.',
+        );
+        _sendAck(messageId, senderId, notFoundStatus, remoteAddress, packet.senderPort ?? remotePort);
+        return;
+      }
+    } else if (_devices.length == 1) {
+      // Single device fallback
+      matchedDevice = _devices.values.first;
+    } else {
+      final badStatus = Status.badRequest(
+        message: 'Multiple devices hosted. Please specify targetDeviceId in message.',
+      );
+      _sendAck(messageId, senderId, badStatus, remoteAddress, packet.senderPort ?? remotePort);
       return;
     }
 
-    // Verify pairing / authorization if enabled
-    if (requirePairKey || _pairedDevices.isNotEmpty) {
-      final pairedDevice = _pairedDevices[senderId];
-      if (pairedDevice == null) {
-        // Device not in paired whitelist
+    // Verify pairKey if configured on this specific shared device
+    if (matchedDevice.pairKey != null && matchedDevice.pairKey!.isNotEmpty) {
+      if (packet.pairKey != matchedDevice.pairKey) {
         final unauthStatus = Status.unauthorized(
-          message: 'Device "$senderId" is not authorized on this server.',
+          message: 'Invalid pair key provided for shared device "${matchedDevice.deviceId}".',
         );
         _sendAck(messageId, senderId, unauthStatus, remoteAddress, packet.senderPort ?? remotePort);
         return;
       }
-
-      // If pairKey is required on paired device or default pairKey is set
-      final expectedKey = pairedDevice.pairKey ?? defaultPairKey;
-      if (expectedKey != null && expectedKey.isNotEmpty) {
-        if (packet.pairKey != expectedKey) {
-          final unauthStatus = Status.unauthorized(
-            message: 'Invalid pair key provided for device "$senderId".',
-          );
-          _sendAck(messageId, senderId, unauthStatus, remoteAddress, packet.senderPort ?? remotePort);
-          return;
-        }
-      }
-
-      // Update last seen timestamp
-      _pairedDevices[senderId] = pairedDevice.copyWith(
-        lastSeenAt: DateTime.now(),
-      );
     }
 
     _messageStreamController.add(packet);
 
-    // Execute user callback to handle message
+    // Call onDataReceived for this specific device
     Status status;
     try {
-      status = await onDataReceived(senderId, packet.payload);
+      status = await onDataReceived(matchedDevice.deviceId, packet.payload);
     } catch (e) {
       status = Status.error(
         e.toString(),
-        message: 'Exception occurred processing message on server',
+        message: 'Exception occurred processing message for device "${matchedDevice.deviceId}"',
       );
     }
 
@@ -349,7 +375,7 @@ class SharedDeviceNetworkServer {
   ) {
     final ackPacket = NetworkPacket.ack(
       messageId: messageId,
-      senderDeviceId: deviceId,
+      senderDeviceId: 'server-host',
       targetDeviceId: targetDeviceId,
       status: status,
     );
@@ -370,19 +396,6 @@ class SharedDeviceNetworkServer {
         socket.send(bytes, destinationAddress, destinationPort);
       }
     } catch (_) {}
-  }
-
-  /// Converts this server instance to a [SharedDevice] model.
-  Future<SharedDevice> toSharedDevice() async {
-    final localIp = await NetworkUtils.getPrimaryLocalIPv4();
-    return SharedDevice(
-      deviceId: deviceId,
-      deviceName: deviceName,
-      deviceDescription: deviceDescription,
-      deviceIp: localIp,
-      devicePort: port,
-      metadata: metadata,
-    );
   }
 
   /// Stops the server and closes all sockets.

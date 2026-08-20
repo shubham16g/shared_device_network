@@ -8,20 +8,20 @@ void main() {
     test('Should serialize and deserialize SharedDevice properly', () {
       const device = SharedDevice(
         deviceId: 'dev-001',
-        deviceName: 'Kitchen POS',
-        deviceDescription: 'Kitchen order screen',
+        deviceName: 'Kitchen POS Printer',
+        deviceDescription: 'Thermal receipt printer',
         deviceIp: '192.168.1.150',
         devicePort: 8888,
-        metadata: {'role': 'display', 'version': 2},
+        metadata: {'type': 'printer', 'paperWidth': 80},
       );
 
       final map = device.toMap();
       expect(map['deviceId'], 'dev-001');
-      expect(map['deviceName'], 'Kitchen POS');
-      expect(map['deviceDescription'], 'Kitchen order screen');
+      expect(map['deviceName'], 'Kitchen POS Printer');
+      expect(map['deviceDescription'], 'Thermal receipt printer');
       expect(map['deviceIp'], '192.168.1.150');
       expect(map['devicePort'], 8888);
-      expect(map['metadata']['role'], 'display');
+      expect(map['metadata']['type'], 'printer');
 
       final jsonStr = device.toJson();
       final fromJson = SharedDevice.fromJson(jsonStr);
@@ -31,7 +31,7 @@ void main() {
       expect(fromJson.deviceDescription, device.deviceDescription);
       expect(fromJson.deviceIp, device.deviceIp);
       expect(fromJson.devicePort, device.devicePort);
-      expect(fromJson.metadata?['version'], 2);
+      expect(fromJson.metadata?['paperWidth'], 80);
       expect(fromJson, equals(device));
     });
 
@@ -114,21 +114,21 @@ void main() {
     });
   });
 
-  group('PairedDevice Model Tests', () {
-    test('PairedDevice serialization and copyWith', () {
-      final paired = PairedDevice(
-        deviceId: 'client-1',
-        deviceName: 'Mobile Scanner',
-        deviceDescription: 'Barcode Scanner',
+  group('SharedDeviceRecord Model Tests', () {
+    test('SharedDeviceRecord serialization and copyWith', () {
+      final record = SharedDeviceRecord(
+        deviceId: 'bt-printer-01',
+        deviceName: 'Bluetooth POS Printer',
+        deviceDescription: 'Thermal 80mm',
         pairKey: 'secret-123',
       );
 
-      final jsonStr = paired.toJson();
-      final fromJson = PairedDevice.fromJson(jsonStr);
+      final jsonStr = record.toJson();
+      final fromJson = SharedDeviceRecord.fromJson(jsonStr);
 
-      expect(fromJson.deviceId, 'client-1');
-      expect(fromJson.deviceName, 'Mobile Scanner');
-      expect(fromJson.deviceDescription, 'Barcode Scanner');
+      expect(fromJson.deviceId, 'bt-printer-01');
+      expect(fromJson.deviceName, 'Bluetooth POS Printer');
+      expect(fromJson.deviceDescription, 'Thermal 80mm');
       expect(fromJson.pairKey, 'secret-123');
     });
   });
@@ -153,7 +153,7 @@ void main() {
         messageId: 42,
         senderDeviceId: 'phone-01',
         senderDeviceName: 'Manager Phone',
-        targetDeviceId: 'server-01',
+        targetDeviceId: 'printer-01',
         pairKey: 'key123',
         payload: {'action': 'PRINT_BILL', 'table': 5},
       );
@@ -166,7 +166,7 @@ void main() {
       expect(decoded.messageId, 42);
       expect(decoded.senderDeviceId, 'phone-01');
       expect(decoded.senderDeviceName, 'Manager Phone');
-      expect(decoded.targetDeviceId, 'server-01');
+      expect(decoded.targetDeviceId, 'printer-01');
       expect(decoded.pairKey, 'key123');
       expect(decoded.payload['action'], 'PRINT_BILL');
     });
@@ -193,7 +193,7 @@ void main() {
     });
   });
 
-  group('UDP Server & Client Integration Tests', () {
+  group('UDP Server & Client Shared Devices Multi-Device Tests', () {
     late SharedDeviceNetworkServer server;
     late SharedDeviceNetworkClient client;
     const testServerPort = 9988;
@@ -204,118 +204,122 @@ void main() {
       await client.dispose();
     });
 
-    test('Server responds to Client discovery request with SharedDevice details', () async {
-      server = SharedDeviceNetworkServer(
-        deviceId: 'server-pos-01',
-        deviceName: 'POS Master',
-        deviceDescription: 'Counter POS terminal',
-        port: testServerPort,
-        discoveryPort: testDiscoveryPort,
-        onDataReceived: (senderDeviceId, message) async => Status.success(),
-      );
-
-      await server.start();
-
-      client = SharedDeviceNetworkClient(
-        deviceId: 'client-waiter-01',
-        deviceName: 'Waiter Tablet',
-        discoveryPort: testDiscoveryPort,
-      );
-
-      final discovered = await client.discoverDevicesOnce(
-        timeout: const Duration(milliseconds: 1500),
-      );
-
-      expect(discovered.isNotEmpty, isTrue);
-      final found = discovered.firstWhere((d) => d.deviceId == 'server-pos-01');
-      expect(found.deviceName, 'POS Master');
-      expect(found.deviceDescription, 'Counter POS terminal');
-      expect(found.devicePort, testServerPort);
-
-      // Now send message using cached discovery resolution
-      final status = await client.sendToDevice(
-        'server-pos-01',
-        {'cmd': 'GET_TABLE_LIST'},
-      );
-      expect(status.isSuccess, isTrue);
-    });
-
-    test('Server and Client full loopback communication with incremental ACK', () async {
-      final receivedMessages = <Map<String, dynamic>>[];
+    test('1 UDP server shares multiple connected devices; auto-starts on first, auto-stops when empty', () async {
+      final receivedData = <String, dynamic>{};
 
       server = SharedDeviceNetworkServer(
-        deviceId: 'test-server',
-        deviceName: 'Test Server',
         port: testServerPort,
         discoveryPort: testDiscoveryPort,
-        onDataReceived: (senderDeviceId, message) async {
-          receivedMessages.add({
-            'senderDeviceId': senderDeviceId,
-            'message': message,
-          });
+        onDataReceived: (deviceId, message) async {
+          receivedData[deviceId] = message;
           return Status.success(
-            message: 'Acknowledged: $message',
-            data: {'echo': message, 'processedBy': 'test-server'},
+            message: 'Handled by $deviceId',
+            data: {'deviceId': deviceId, 'echo': message},
           );
         },
       );
 
-      await server.start();
+      // 1. Initially server is not running
+      expect(server.isRunning, isFalse);
+      expect(server.deviceCount, 0);
+
+      // 2. Add 1st device (e.g. Bluetooth Printer) -> auto starts server
+      await server.addDevice(
+        'printer-bt-01',
+        'Kitchen Printer',
+        deviceDescription: 'Thermal 80mm Bluetooth Printer',
+      );
+
+      expect(server.isRunning, isTrue);
+      expect(server.deviceCount, 1);
+      expect(server.hasDevice('printer-bt-01'), isTrue);
+
+      // 3. Add 2nd device (e.g. Barcode Scanner) to same running UDP server
+      await server.addDevice(
+        'scanner-usb-01',
+        'Counter Scanner',
+        deviceDescription: '2D QR / Barcode Scanner',
+        pairKey: 'scanner-pass-123',
+      );
+
+      expect(server.isRunning, isTrue);
+      expect(server.deviceCount, 2);
+
+      // 4. Client discovers devices on the network
+      client = SharedDeviceNetworkClient(
+        deviceId: 'waiter-app-01',
+        deviceName: 'Waiter Phone',
+        discoveryPort: testDiscoveryPort,
+        defaultTimeout: const Duration(seconds: 3),
+      );
+
+      final discoveredList = await client.discoverDevicesOnce(
+        timeout: const Duration(milliseconds: 1500),
+      );
+
+      // Client discovers 1 UDP server, but finds 2 shared devices!
+      expect(discoveredList.length, 2);
+      final printer = discoveredList.firstWhere((d) => d.deviceId == 'printer-bt-01');
+      final scanner = discoveredList.firstWhere((d) => d.deviceId == 'scanner-usb-01');
+
+      expect(printer.deviceName, 'Kitchen Printer');
+      expect(printer.devicePort, testServerPort);
+      expect(scanner.deviceName, 'Counter Scanner');
+      expect(scanner.devicePort, testServerPort);
+
+      // 5. Send message to 1st shared device (Printer)
+      final printerStatus = await client.sendToDevice(
+        'printer-bt-01',
+        {'cmd': 'PRINT_KOT', 'table': 3},
+      );
+      expect(printerStatus.isSuccess, isTrue);
+      expect(printerStatus.message, 'Handled by printer-bt-01');
+      expect(receivedData['printer-bt-01']['cmd'], 'PRINT_KOT');
+
+      // 6. Send message to 2nd shared device with valid pairKey (Scanner)
+      final scannerStatus = await client.sendToDevice(
+        'scanner-usb-01',
+        {'cmd': 'SCAN_BARCODE'},
+        pairKey: 'scanner-pass-123',
+      );
+      expect(scannerStatus.isSuccess, isTrue);
+      expect(scannerStatus.message, 'Handled by scanner-usb-01');
+      expect(receivedData['scanner-usb-01']['cmd'], 'SCAN_BARCODE');
+
+      // 7. Send message to Scanner with wrong pairKey -> rejected
+      final wrongKeyStatus = await client.sendToDevice(
+        'scanner-usb-01',
+        {'cmd': 'SCAN_BARCODE'},
+        pairKey: 'wrong-key',
+      );
+      expect(wrongKeyStatus.isSuccess, isFalse);
+      expect(wrongKeyStatus.statusCode, 401);
+
+      // 8. Test alias sendToDeivce
+      final aliasStatus = await client.sendToDeivce(
+        'printer-bt-01',
+        {'cmd': 'PRINT_RECEIPT'},
+      );
+      expect(aliasStatus.isSuccess, isTrue);
+
+      // 9. Remove 1st device -> server remains running for 2nd device
+      final removedFirst = await server.removeDevice('printer-bt-01');
+      expect(removedFirst, isTrue);
+      expect(server.deviceCount, 1);
       expect(server.isRunning, isTrue);
 
-      client = SharedDeviceNetworkClient(
-        deviceId: 'test-client',
-        deviceName: 'Test Client',
-        defaultTimeout: const Duration(seconds: 3),
-        discoveryPort: testDiscoveryPort,
-      );
-
-      // Send 1st message to server address directly
-      final status1 = await client.sendToAddress(
-        '127.0.0.1',
-        testServerPort,
-        'Hello World #1',
-      );
-
-      expect(status1.isSuccess, isTrue);
-      expect(status1.statusCode, 200);
-      expect(status1.message, 'Acknowledged: Hello World #1');
-      expect(status1.data['echo'], 'Hello World #1');
-      expect(receivedMessages.length, 1);
-      expect(receivedMessages[0]['senderDeviceId'], 'test-client');
-
-      // Send 2nd message
-      final status2 = await client.sendToAddress(
-        '127.0.0.1',
-        testServerPort,
-        'Hello World #2',
-      );
-
-      expect(status2.isSuccess, isTrue);
-      expect(status2.message, 'Acknowledged: Hello World #2');
-      expect(receivedMessages.length, 2);
-
-      // Test sendToDevice alias
-      final status3 = await client.sendToDeivce(
-        'test-server',
-        'Hello World #3',
-        ip: '127.0.0.1',
-        port: testServerPort,
-      );
-
-      expect(status3.isSuccess, isTrue);
-      expect(status3.message, 'Acknowledged: Hello World #3');
-      expect(receivedMessages.length, 3);
+      // 10. Remove 2nd device -> all devices removed, server automatically stops!
+      final removedSecond = await server.removeDevice('scanner-usb-01');
+      expect(removedSecond, isTrue);
+      expect(server.deviceCount, 0);
+      expect(server.isRunning, isFalse);
     });
 
-    test('Client handles timeout when server is unreachable or fails to ACK', () async {
+    test('Client handles timeout when target device is unreachable or fails to ACK', () async {
       server = SharedDeviceNetworkServer(
-        deviceId: 'test-server',
         port: testServerPort,
         discoveryPort: testDiscoveryPort,
-        onDataReceived: (senderDeviceId, message) async {
-          return Status.success();
-        },
+        onDataReceived: (deviceId, message) async => Status.success(),
       );
 
       client = SharedDeviceNetworkClient(
@@ -323,7 +327,7 @@ void main() {
         defaultTimeout: const Duration(milliseconds: 300),
       );
 
-      // Send to non-existent port
+      // Send to unhosted port
       final status = await client.sendToAddress(
         '127.0.0.1',
         19999,
@@ -334,84 +338,6 @@ void main() {
       expect(status.isSuccess, isFalse);
       expect(status.statusCode, 408);
       expect(status.error, 'TIMEOUT');
-    });
-
-    test('Device pairing and authorization validation on server', () async {
-      server = SharedDeviceNetworkServer(
-        deviceId: 'secure-server',
-        port: testServerPort,
-        discoveryPort: testDiscoveryPort,
-        requirePairKey: true,
-        onDataReceived: (senderDeviceId, message) async {
-          return Status.success(message: 'Access Granted');
-        },
-      );
-
-      // Add authorized device
-      final added = await server.addDevice(
-        'trusted-device',
-        'Trusted Scanner',
-        pairKey: 'secret-pass-key',
-      );
-      expect(added, isTrue);
-      expect(server.isDevicePaired('trusted-device'), isTrue);
-
-      await server.start();
-
-      client = SharedDeviceNetworkClient(
-        deviceId: 'untrusted-device',
-        defaultTimeout: const Duration(seconds: 2),
-      );
-
-      // 1. Untrusted device should be rejected
-      final statusUnauth = await client.sendToAddress(
-        '127.0.0.1',
-        testServerPort,
-        'Secret request',
-      );
-      expect(statusUnauth.isSuccess, isFalse);
-      expect(statusUnauth.statusCode, 401);
-      expect(statusUnauth.error, 'UNAUTHORIZED');
-
-      // 2. Trusted device with wrong key should be rejected
-      final client2 = SharedDeviceNetworkClient(
-        deviceId: 'trusted-device',
-        defaultTimeout: const Duration(seconds: 2),
-      );
-      final statusWrongKey = await client2.sendToAddress(
-        '127.0.0.1',
-        testServerPort,
-        'Secret request',
-        pairKey: 'wrong-key',
-      );
-      expect(statusWrongKey.isSuccess, isFalse);
-      expect(statusWrongKey.statusCode, 401);
-
-      // 3. Trusted device with correct key should succeed
-      final statusSuccess = await client2.sendToAddress(
-        '127.0.0.1',
-        testServerPort,
-        'Secret request',
-        pairKey: 'secret-pass-key',
-      );
-      expect(statusSuccess.isSuccess, isTrue);
-      expect(statusSuccess.message, 'Access Granted');
-
-      // 4. Remove device and verify it gets rejected afterwards
-      final removed = await server.removeDevice('trusted-device');
-      expect(removed, isTrue);
-      expect(server.isDevicePaired('trusted-device'), isFalse);
-
-      final statusAfterRemove = await client2.sendToAddress(
-        '127.0.0.1',
-        testServerPort,
-        'Secret request',
-        pairKey: 'secret-pass-key',
-      );
-      expect(statusAfterRemove.isSuccess, isFalse);
-      expect(statusAfterRemove.statusCode, 401);
-
-      await client2.dispose();
     });
   });
 }
