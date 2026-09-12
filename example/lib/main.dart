@@ -4,8 +4,9 @@ import 'package:shared_device_network/shared_device_network.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  ContinuousForegroundService.initCommunicationPort();
   if (Platform.isAndroid || Platform.isIOS) {
-    await SharedDeviceForegroundService.init();
+    await ContinuousForegroundService.init();
   }
   runApp(const SharedDeviceApp());
 }
@@ -67,6 +68,12 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   final _clientMessageController = TextEditingController(text: '{"action":"PRINT","text":"Hello Receipt"}');
   final _clientPairKeyController = TextEditingController(text: '1234');
 
+  // Continuous Foreground Service state
+  bool _isContinuousServiceRunning = false;
+  int _continuousServiceTick = 0;
+  String _continuousServiceLastUpdate = 'Not running';
+  bool _isIgnoringBatteryOpt = false;
+
   @override
   void initState() {
     super.initState();
@@ -75,6 +82,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     _server = SharedDeviceNetworkServer(
       port: 8888,
       discoveryPort: 8889,
+      enableForegroundService: true,
       onDataReceived: (deviceId, message) async {
         final log = 'Received for "$deviceId": "$message"';
         setState(() {
@@ -95,6 +103,89 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     );
 
     SharedDeviceForegroundService.addMessageCallback(_handleBackgroundServerData);
+    ContinuousForegroundService.addDataCallback(_handleContinuousServiceData);
+    _checkContinuousServiceStatus();
+  }
+
+  Future<void> _checkContinuousServiceStatus() async {
+    final running = await ContinuousForegroundService.isRunning();
+    final batteryOpt = await ContinuousForegroundService.isIgnoringBatteryOptimizations();
+    if (mounted) {
+      setState(() {
+        _isContinuousServiceRunning = running;
+        _isIgnoringBatteryOpt = batteryOpt;
+      });
+    }
+  }
+
+  void _handleContinuousServiceData(Object data) {
+    if (data is Map) {
+      final map = Map<String, dynamic>.from(data);
+      final status = map['status']?.toString();
+      final tick = map['tick'] as int? ?? _continuousServiceTick;
+      final timestamp = map['timestamp']?.toString() ?? DateTime.now().toIso8601String();
+      if (mounted) {
+        setState(() {
+          if (status == 'started' || status == 'running') {
+            _isContinuousServiceRunning = true;
+          } else if (status == 'stopped') {
+            _isContinuousServiceRunning = false;
+          }
+          _continuousServiceTick = tick;
+          _continuousServiceLastUpdate = timestamp.length >= 19 ? timestamp.substring(11, 19) : timestamp;
+        });
+      }
+    }
+  }
+
+  Future<void> _startContinuousForegroundService() async {
+    final success = await ContinuousForegroundService.startService(
+      notificationTitle: 'Foreground Service Active',
+      notificationText: 'Running indefinitely in background',
+    );
+    if (mounted) {
+      setState(() {
+        _isContinuousServiceRunning = success;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? '✅ Foreground service started indefinitely!' : '❌ Failed to start service.'),
+          backgroundColor: success ? Colors.green.shade700 : Colors.red.shade700,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  Future<void> _stopContinuousForegroundService() async {
+    final success = await ContinuousForegroundService.stopService();
+    if (mounted) {
+      setState(() {
+        if (success) _isContinuousServiceRunning = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? 'Foreground service stopped.' : 'Failed to stop service.'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Future<void> _requestBatteryOptimizationExemption() async {
+    final granted = await ContinuousForegroundService.requestIgnoreBatteryOptimization();
+    if (mounted) {
+      setState(() {
+        _isIgnoringBatteryOpt = granted;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(granted
+              ? 'Battery optimization ignored for non-stop execution.'
+              : 'Battery optimization settings unchanged.'),
+        ),
+      );
+    }
   }
 
   void _handleBackgroundServerData(Object data) {
@@ -113,6 +204,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   @override
   void dispose() {
     SharedDeviceForegroundService.removeMessageCallback(_handleBackgroundServerData);
+    ContinuousForegroundService.removeDataCallback(_handleContinuousServiceData);
     _server.stop();
     _client.dispose();
     _tabController.dispose();
@@ -230,11 +322,134 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
+      body: Column(
         children: [
-          _buildServerTab(),
-          _buildClientTab(),
+          _buildServiceControlCard(),
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _buildServerTab(),
+                _buildClientTab(),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildServiceControlCard() {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final isRunning = _isContinuousServiceRunning;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isRunning
+            ? (isDark ? const Color(0xFF1B3B2B) : const Color(0xFFE8F5E9))
+            : (isDark ? const Color(0xFF2C241E) : const Color(0xFFFFF3E0)),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isRunning
+              ? (isDark ? Colors.green.shade700 : Colors.green.shade300)
+              : (isDark ? Colors.orange.shade700 : Colors.orange.shade300),
+          width: 1.2,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: isRunning ? Colors.green : Colors.orange,
+                  boxShadow: isRunning
+                      ? [
+                          BoxShadow(
+                            color: Colors.green.withValues(alpha: 0.6),
+                            blurRadius: 8,
+                            spreadRadius: 2,
+                          ),
+                        ]
+                      : null,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  isRunning ? 'Foreground Service: RUNNING' : 'Foreground Service: STOPPED',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                    color: isRunning ? Colors.green.shade800 : Colors.orange.shade900,
+                  ),
+                ),
+              ),
+              if (Platform.isAndroid && !_isIgnoringBatteryOpt)
+                TextButton.icon(
+                  onPressed: _requestBatteryOptimizationExemption,
+                  icon: const Icon(Icons.battery_alert, size: 16),
+                  label: const Text('Unrestrict', style: TextStyle(fontSize: 11)),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            isRunning
+                ? 'Runs continuously in dedicated isolate • Heartbeat tick: $_continuousServiceTick (Last: $_continuousServiceLastUpdate)'
+                : 'Service is inactive. Press "Start Service" to begin continuous execution indefinitely.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: isDark ? Colors.white70 : Colors.black87,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: isRunning ? null : _startContinuousForegroundService,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.green.shade600,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey.shade400,
+                  ),
+                  icon: const Icon(Icons.play_arrow, size: 18),
+                  label: const Text('Start Service'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: !isRunning ? null : _stopContinuousForegroundService,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.red.shade600,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey.shade400,
+                  ),
+                  icon: const Icon(Icons.stop, size: 18),
+                  label: const Text('Stop Service'),
+                ),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -401,9 +616,11 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(
-                      'Discovered Shared Devices',
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                    Expanded(
+                      child: Text(
+                        'Discovered Shared Devices',
+                        style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                      ),
                     ),
                     FilledButton.tonalIcon(
                       onPressed: _isDiscovering ? null : _startDiscovery,

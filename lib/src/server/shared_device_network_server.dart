@@ -17,8 +17,10 @@ typedef OnDataReceivedCallback = Future<Status> Function(
 /// A UDP server running on a host device that shares local connected peripherals
 /// (e.g. Bluetooth printers, USB scanners, cash drawers) across the local network.
 ///
-/// Calling [addDevice] registers a shared connected device and automatically starts the UDP server.
-/// Calling [removeDevice] removes the device, and automatically stops the UDP server when all devices are removed.
+/// - Calling [addDevice] registers a shared connected device, automatically starts the UDP server,
+///   and starts the Android/iOS foreground service (displaying the notification).
+/// - Calling [removeDevice] removes the device, and when all devices are removed, automatically
+///   stops the UDP server and terminates the foreground service (removing the notification).
 class SharedDeviceNetworkServer {
   /// Main UDP data port for receiving messages and sending ACKs (default: 8888).
   final int port;
@@ -79,8 +81,7 @@ class SharedDeviceNetworkServer {
 
   /// Adds a shared connected device to this server.
   ///
-  /// If the server is not yet running and [autoStartOnFirstDevice] is true,
-  /// this automatically starts the UDP server.
+  /// Automatically starts the UDP server (and foreground service notification if enabled) on the first device.
   Future<bool> addDevice(
     String deviceId,
     String deviceName, {
@@ -99,16 +100,25 @@ class SharedDeviceNetworkServer {
       addedAt: DateTime.now(),
     );
 
-    // Auto-start server if not already running
+    final count = _devices.length;
+    final title = count == 1 ? '$deviceName Active' : notificationTitle;
+    final text = 'Sharing $count connected peripheral${count == 1 ? '' : 's'} on network';
+
+    // Auto-start server and show foreground notification if not already running
     if (!_isRunning && autoStartOnFirstDevice) {
       if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
         await startWithForegroundService(
-          notificationTitle: notificationTitle,
-          notificationText: notificationText,
+          notificationTitle: title,
+          notificationText: text,
         );
       } else {
         await start();
       }
+    } else if (_isRunning && enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+      await SharedDeviceForegroundService.updateNotification(
+        notificationTitle: title,
+        notificationText: text,
+      );
     }
 
     return true;
@@ -116,16 +126,24 @@ class SharedDeviceNetworkServer {
 
   /// Removes a shared connected device from this server.
   ///
-  /// If all devices have been removed and [autoStopOnEmptyDevices] is true,
-  /// this automatically stops the UDP server.
+  /// If all devices have been removed, automatically stops the UDP server
+  /// and removes the foreground notification.
   Future<bool> removeDevice(String deviceId) async {
     final removed = _devices.remove(deviceId);
     if (removed != null) {
-      if (_devices.isEmpty && _isRunning && autoStopOnEmptyDevices) {
-        if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
-          await stopForegroundService();
+      if (_devices.isEmpty) {
+        if (autoStopOnEmptyDevices) {
+          if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+            await stopForegroundService(); // Removes the notification completely!
+          }
+          await stop();
         }
-        await stop();
+      } else if (_isRunning && enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+        final remaining = _devices.length;
+        await SharedDeviceForegroundService.updateNotification(
+          notificationTitle: notificationTitle,
+          notificationText: 'Sharing $remaining connected peripheral${remaining == 1 ? '' : 's'} on network',
+        );
       }
       return true;
     }
@@ -148,7 +166,7 @@ class SharedDeviceNetworkServer {
         InternetAddress.anyIPv4,
         port,
         reuseAddress: true,
-        reusePort: !Platform.isWindows,
+        reusePort: Platform.isIOS || Platform.isMacOS,
       );
       _dataSocket!.broadcastEnabled = true;
       _dataSocket!.listen(_handleDataSocketEvent);
@@ -159,7 +177,7 @@ class SharedDeviceNetworkServer {
           InternetAddress.anyIPv4,
           discoveryPort,
           reuseAddress: true,
-          reusePort: !Platform.isWindows,
+          reusePort: true,
         );
         _discoverySocket!.broadcastEnabled = true;
         _discoverySocket!.listen(_handleDiscoverySocketEvent);
@@ -184,7 +202,7 @@ class SharedDeviceNetworkServer {
     );
   }
 
-  /// Stops the foreground service if running.
+  /// Stops the foreground service if running, removing the notification.
   Future<bool> stopForegroundService() async {
     return await SharedDeviceForegroundService.stopService();
   }
@@ -249,7 +267,6 @@ class SharedDeviceNetworkServer {
     InternetAddress remoteAddress,
     int remotePort,
   ) async {
-    // If no devices are shared on this server, do not announce
     if (_devices.isEmpty) return;
 
     final localIp = await NetworkUtils.getPrimaryLocalIPv4();
@@ -257,7 +274,6 @@ class SharedDeviceNetworkServer {
         ? packet.senderPort!
         : remotePort;
 
-    // Check if request was targeted at a specific device ID
     final targetedId = packet.targetDeviceId;
     final List<Map<String, dynamic>> devicesToAnnounce = [];
 
@@ -323,7 +339,6 @@ class SharedDeviceNetworkServer {
         return;
       }
     } else if (_devices.length == 1) {
-      // Single device fallback
       matchedDevice = _devices.values.first;
     } else {
       final badStatus = Status.badRequest(

@@ -179,14 +179,6 @@ In `android/app/src/main/AndroidManifest.xml`:
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-
-    <application ...>
-        <service
-            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
-            android:foregroundServiceType="connectedDevice"
-            android:stopWithTask="false"
-            android:exported="false" />
-    </application>
 </manifest>
 ```
 
