@@ -50,6 +50,8 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   // Server state
   late SharedDeviceNetworkServer _server;
   final List<String> _serverLogs = [];
+  bool _isBackgroundServiceRunning = false;
+  bool _permissionGranted = false;
 
   // Client state
   late SharedDeviceNetworkClient _client;
@@ -95,7 +97,46 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       defaultTimeout: const Duration(seconds: 4),
     );
 
+    _initBackgroundServiceAndSync();
+  }
+
+  Future<void> _initBackgroundServiceAndSync() async {
+    // 1. Request Android notifications & battery optimization permissions
+    if (Platform.isAndroid) {
+      _permissionGranted = await SharedDeviceForegroundService.requestPermissions();
+    }
+
+    // 2. Attach listeners for background events
     SharedDeviceForegroundService.addMessageCallback(_handleBackgroundServerData);
+    SharedDeviceForegroundService.addLogCallback(_handleBackgroundLog);
+    SharedDeviceForegroundService.addDeviceCallback(_handleDevicesUpdated);
+
+    // 3. Restore any previously running state from background service
+    final isRunning = await SharedDeviceForegroundService.isRunning();
+    final storedDevices = await SharedDeviceForegroundService.getStoredDevices();
+    final storedLogs = await SharedDeviceForegroundService.getStoredLogs();
+
+    if (mounted) {
+      setState(() {
+        _isBackgroundServiceRunning = isRunning;
+        for (final log in storedLogs) {
+          if (!_serverLogs.contains(log)) {
+            _serverLogs.add(log);
+          }
+        }
+        for (final dev in storedDevices) {
+          if (!_server.hasDevice(dev.deviceId)) {
+            _server.addDevice(
+              dev.deviceId,
+              dev.deviceName,
+              deviceDescription: dev.deviceDescription,
+              pairKey: dev.pairKey,
+              metadata: dev.metadata,
+            );
+          }
+        }
+      });
+    }
   }
 
   void _handleBackgroundServerData(Object data) {
@@ -104,17 +145,51 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       if (map['event'] == 'onDataReceived') {
         final devId = map['deviceId'];
         final msg = map['message'];
-        setState(() {
-          _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] (BG) For $devId: "$msg"');
-        });
+        if (mounted) {
+          setState(() {
+            _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] (BG) For $devId: "$msg"');
+          });
+        }
       }
+    }
+  }
+
+  void _handleBackgroundLog(String log) {
+    if (mounted) {
+      setState(() {
+        if (!_serverLogs.contains(log)) {
+          _serverLogs.insert(0, log);
+        }
+      });
+    }
+  }
+
+  void _handleDevicesUpdated(List<SharedDeviceRecord> devices) {
+    if (mounted) {
+      setState(() {
+        for (final dev in devices) {
+          if (!_server.hasDevice(dev.deviceId)) {
+            _server.addDevice(
+              dev.deviceId,
+              dev.deviceName,
+              deviceDescription: dev.deviceDescription,
+              pairKey: dev.pairKey,
+              metadata: dev.metadata,
+            );
+          }
+        }
+      });
     }
   }
 
   @override
   void dispose() {
+    // Detach callbacks so we don't leak listeners, but DO NOT stop the server
+    // so it continues running in the background isolate even when UI is killed!
     SharedDeviceForegroundService.removeMessageCallback(_handleBackgroundServerData);
-    _server.stop();
+    SharedDeviceForegroundService.removeLogCallback(_handleBackgroundLog);
+    SharedDeviceForegroundService.removeDeviceCallback(_handleDevicesUpdated);
+
     _client.dispose();
     _tabController.dispose();
     _deviceIdController.dispose();
@@ -143,21 +218,45 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
       pairKey: pairKey,
     );
 
+    final isRunning = await SharedDeviceForegroundService.isRunning();
+
     setState(() {
+      _isBackgroundServiceRunning = isRunning || _server.isRunning;
       _serverLogs.insert(
         0,
-        '[${DateTime.now().toIso8601String().substring(11, 19)}] Added shared device "$devName" ($devId). Server running: ${_server.isRunning}',
+        '[${DateTime.now().toIso8601String().substring(11, 19)}] Added shared device "$devName" ($devId). Server active: $_isBackgroundServiceRunning',
       );
     });
   }
 
   Future<void> _removeSharedDevice(String deviceId) async {
     await _server.removeDevice(deviceId);
+    final isRunning = await SharedDeviceForegroundService.isRunning();
     setState(() {
+      _isBackgroundServiceRunning = isRunning;
       _serverLogs.insert(
         0,
-        '[${DateTime.now().toIso8601String().substring(11, 19)}] Removed device "$deviceId". Remaining: ${_server.deviceCount}, Server running: ${_server.isRunning}',
+        '[${DateTime.now().toIso8601String().substring(11, 19)}] Removed device "$deviceId". Remaining: ${_server.deviceCount}',
       );
+    });
+  }
+
+  Future<void> _stopBackgroundServer() async {
+    await _server.stop();
+    await SharedDeviceForegroundService.stopService(clearDevices: false);
+    setState(() {
+      _isBackgroundServiceRunning = false;
+      _serverLogs.insert(
+        0,
+        '[${DateTime.now().toIso8601String().substring(11, 19)}] Background service stopped manually by user.',
+      );
+    });
+  }
+
+  Future<void> _clearLogs() async {
+    await SharedDeviceForegroundService.clearStoredLogs();
+    setState(() {
+      _serverLogs.clear();
     });
   }
 
@@ -242,27 +341,77 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildServerTab() {
+    final bool active = _isBackgroundServiceRunning || _server.isRunning;
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
         // Status header
         Card(
-          color: _server.isRunning
+          color: active
               ? Colors.green.withValues(alpha: 0.15)
               : Colors.orange.withValues(alpha: 0.15),
-          child: ListTile(
-            leading: Icon(
-              _server.isRunning ? Icons.radio_button_checked : Icons.radio_button_off,
-              color: _server.isRunning ? Colors.green : Colors.orange,
-            ),
-            title: Text(
-              _server.isRunning ? 'UDP Server Active (Port 8888)' : 'UDP Server Inactive',
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
-            subtitle: Text(
-              _server.isRunning
-                  ? 'Sharing ${_server.deviceCount} connected peripheral(s)'
-                  : 'Add a connected device below to automatically start the server',
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      active ? Icons.radio_button_checked : Icons.radio_button_off,
+                      color: active ? Colors.green : Colors.orange,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        active ? 'Background Service Running (Port 8888)' : 'Background Service Inactive',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                    ),
+                    if (active)
+                      FilledButton.tonalIcon(
+                        onPressed: _stopBackgroundServer,
+                        icon: const Icon(Icons.stop, size: 16),
+                        label: const Text('Stop'),
+                        style: FilledButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          backgroundColor: Colors.red.withValues(alpha: 0.15),
+                          foregroundColor: Colors.red,
+                        ),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  active
+                      ? '✅ Persistent Service Active: Keeps running & listening even when app is killed/swiped away.'
+                      : 'Add a connected device below to automatically start the background server.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: active ? Colors.green.shade800 : Colors.orange.shade800,
+                  ),
+                ),
+                if (Platform.isAndroid && !_permissionGranted) ...[
+                  const SizedBox(height: 8),
+                  InkWell(
+                    onTap: () async {
+                      final granted = await SharedDeviceForegroundService.requestPermissions();
+                      setState(() => _permissionGranted = granted);
+                    },
+                    child: const Row(
+                      children: [
+                        Icon(Icons.warning_amber_rounded, size: 16, color: Colors.amber),
+                        SizedBox(width: 4),
+                        Text(
+                          'Tap here to grant notification & battery permissions',
+                          style: TextStyle(fontSize: 12, color: Colors.blue, decoration: TextDecoration.underline),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
         ),
@@ -365,7 +514,17 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           ),
         ),
         const SizedBox(height: 16),
-        Text('Server Logs', style: Theme.of(context).textTheme.titleSmall),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Server Logs', style: Theme.of(context).textTheme.titleSmall),
+            if (_serverLogs.isNotEmpty)
+              TextButton(
+                onPressed: _clearLogs,
+                child: const Text('Clear Logs', style: TextStyle(fontSize: 12)),
+              ),
+          ],
+        ),
         const SizedBox(height: 8),
         Container(
           height: 180,

@@ -131,6 +131,32 @@ void main() {
       expect(fromJson.deviceDescription, 'Thermal 80mm');
       expect(fromJson.pairKey, 'secret-123');
     });
+
+    test('SharedDeviceRecord list serialization for background persistence', () {
+      final records = [
+        SharedDeviceRecord(
+          deviceId: 'printer-01',
+          deviceName: 'Kitchen Printer',
+          pairKey: '1234',
+        ),
+        SharedDeviceRecord(
+          deviceId: 'scanner-01',
+          deviceName: 'Barcode Scanner',
+          deviceDescription: 'USB 2D scanner',
+        ),
+      ];
+
+      final serializedList = records.map((r) => r.toMap()).toList();
+      final reconstructed = serializedList
+          .map((m) => SharedDeviceRecord.fromMap(Map<String, dynamic>.from(m)))
+          .toList();
+
+      expect(reconstructed.length, 2);
+      expect(reconstructed[0].deviceId, 'printer-01');
+      expect(reconstructed[0].pairKey, '1234');
+      expect(reconstructed[1].deviceId, 'scanner-01');
+      expect(reconstructed[1].deviceDescription, 'USB 2D scanner');
+    });
   });
 
   group('MessageIdGenerator Tests', () {

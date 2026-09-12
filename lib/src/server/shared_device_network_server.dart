@@ -65,7 +65,22 @@ class SharedDeviceNetworkServer {
     this.enableForegroundService = false,
     this.notificationTitle = 'Shared Device Server Active',
     this.notificationText = 'Sharing connected devices on network...',
-  });
+  }) {
+    if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+      SharedDeviceForegroundService.addMessageCallback(_handleBackgroundDataCallback);
+    }
+  }
+
+  void _handleBackgroundDataCallback(Object data) {
+    if (data is Map) {
+      final map = Map<String, dynamic>.from(data);
+      if (map['event'] == 'onDataReceived') {
+        final devId = map['deviceId']?.toString() ?? '';
+        final payload = map['message'];
+        onDataReceived(devId, payload);
+      }
+    }
+  }
 
   /// Whether the UDP server is currently running and listening on sockets.
   bool get isRunning => _isRunning;
@@ -100,25 +115,22 @@ class SharedDeviceNetworkServer {
       addedAt: DateTime.now(),
     );
 
-    final count = _devices.length;
-    final title = count == 1 ? '$deviceName Active' : notificationTitle;
-    final text = 'Sharing $count connected peripheral${count == 1 ? '' : 's'} on network';
-
-    // Auto-start server and show foreground notification if not already running
-    if (!_isRunning && autoStartOnFirstDevice) {
-      if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
-        await startWithForegroundService(
-          notificationTitle: title,
-          notificationText: text,
-        );
-      } else {
-        await start();
-      }
-    } else if (_isRunning && enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
-      await SharedDeviceForegroundService.updateNotification(
-        notificationTitle: title,
-        notificationText: text,
+    if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+      _isRunning = true;
+      return await SharedDeviceForegroundService.addDeviceToBackgroundServer(
+        deviceId: deviceId,
+        deviceName: deviceName,
+        deviceDescription: deviceDescription,
+        pairKey: pairKey,
+        metadata: metadata,
+        port: port,
+        discoveryPort: discoveryPort,
       );
+    }
+
+    // Auto-start local UDP server if not already running
+    if (!_isRunning && autoStartOnFirstDevice) {
+      await start();
     }
 
     return true;
@@ -130,20 +142,20 @@ class SharedDeviceNetworkServer {
   /// and removes the foreground notification.
   Future<bool> removeDevice(String deviceId) async {
     final removed = _devices.remove(deviceId);
+    if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+      await SharedDeviceForegroundService.removeDeviceFromBackgroundServer(deviceId);
+      if (_devices.isEmpty && autoStopOnEmptyDevices) {
+        _isRunning = false;
+        await SharedDeviceForegroundService.stopService();
+      }
+      return true;
+    }
+
     if (removed != null) {
       if (_devices.isEmpty) {
         if (autoStopOnEmptyDevices) {
-          if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
-            await stopForegroundService(); // Removes the notification completely!
-          }
           await stop();
         }
-      } else if (_isRunning && enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
-        final remaining = _devices.length;
-        await SharedDeviceForegroundService.updateNotification(
-          notificationTitle: notificationTitle,
-          notificationText: 'Sharing $remaining connected peripheral${remaining == 1 ? '' : 's'} on network',
-        );
       }
       return true;
     }
@@ -159,6 +171,18 @@ class SharedDeviceNetworkServer {
   /// Starts listening for UDP discovery and data messages.
   Future<void> start() async {
     if (_isRunning) return;
+
+    if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+      _isRunning = true;
+      await SharedDeviceForegroundService.startBackgroundServer(
+        port: port,
+        discoveryPort: discoveryPort,
+        initialDevices: _devices.values.toList(),
+        notificationTitle: notificationTitle,
+        notificationText: notificationText,
+      );
+      return;
+    }
 
     try {
       // 1. Bind main data socket
@@ -195,8 +219,11 @@ class SharedDeviceNetworkServer {
     String? notificationTitle,
     String? notificationText,
   }) async {
-    await start();
-    return await SharedDeviceForegroundService.startService(
+    _isRunning = true;
+    return await SharedDeviceForegroundService.startBackgroundServer(
+      port: port,
+      discoveryPort: discoveryPort,
+      initialDevices: _devices.values.toList(),
       notificationTitle: notificationTitle ?? this.notificationTitle,
       notificationText: notificationText ?? this.notificationText,
     );
@@ -204,6 +231,7 @@ class SharedDeviceNetworkServer {
 
   /// Stops the foreground service if running, removing the notification.
   Future<bool> stopForegroundService() async {
+    _isRunning = false;
     return await SharedDeviceForegroundService.stopService();
   }
 
@@ -430,6 +458,9 @@ class SharedDeviceNetworkServer {
 
   /// Disposes resources and stream controllers.
   Future<void> dispose() async {
+    if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+      SharedDeviceForegroundService.removeMessageCallback(_handleBackgroundDataCallback);
+    }
     await stop();
     await _messageStreamController.close();
   }
