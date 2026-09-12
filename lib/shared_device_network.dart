@@ -17,7 +17,6 @@ export 'src/client/client_config.dart';
 
 // Service
 export 'src/service/foreground_service_helper.dart';
-export 'src/service/continuous_foreground_service.dart';
 
 // Utils
 export 'src/utils/network_utils.dart';
