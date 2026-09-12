@@ -61,6 +61,9 @@ class SharedDeviceNetworkServer {
     _staticNotificationText = notificationText;
     _staticEnableForegroundService = enableForegroundService;
 
+    _staticDevices.clear();
+    _staticDevicesController.add(devices);
+
     if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
       await SharedDeviceForegroundService.init(
         notificationChannelName: notificationChannelName,
@@ -68,16 +71,13 @@ class SharedDeviceNetworkServer {
         notificationId: notificationId,
       );
 
+      // Never auto-add devices or auto-start server/notification on startup
+      await SharedDeviceForegroundService.clearStoredDevices();
+      await SharedDeviceForegroundService.stopService();
+
       SharedDeviceForegroundService.addMessageCallback(_handleStaticBackgroundMessage);
       SharedDeviceForegroundService.addLogCallback(_handleStaticBackgroundLog);
       SharedDeviceForegroundService.addDeviceCallback(_handleStaticDevicesUpdated);
-
-      final stored = await SharedDeviceForegroundService.getStoredDevices();
-      _staticDevices.clear();
-      for (final dev in stored) {
-        _staticDevices[dev.deviceId] = dev;
-      }
-      _staticDevicesController.add(devices);
     }
   }
 

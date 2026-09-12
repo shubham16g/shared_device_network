@@ -1,17 +1,19 @@
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_device_network/shared_device_network.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  if (Platform.isAndroid || Platform.isIOS) {
-    await SharedDeviceNetworkServer.init(
-      port: 8888,
-      discoveryPort: 8889,
-      notificationTitle: 'Shared Device Server Active',
-      notificationText: 'Sharing connected devices on network...',
-    );
-  }
+
+  // 1. Initialize server configuration (does NOT start sockets or show notification yet)
+  await SharedDeviceNetworkServer.init(
+    port: 8888,
+    discoveryPort: 8889,
+    notificationTitle: 'POS Server Active',
+    notificationText: 'Sharing connected peripherals over LAN...',
+  );
+
   runApp(const SharedDeviceApp());
 }
 
@@ -21,473 +23,429 @@ class SharedDeviceApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Shared Connected Devices Network',
+      title: 'Shared Device Network Demo',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF1E88E5),
-          brightness: Brightness.light,
-        ),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF1E88E5)),
         useMaterial3: true,
       ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF64B5F6),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
-      home: const MainScreen(),
+      home: const HomeScreen(),
     );
   }
 }
 
-class MainScreen extends StatefulWidget {
-  const MainScreen({super.key});
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
 
   @override
-  State<MainScreen> createState() => _MainScreenState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+  late final TabController _tabController;
+  late final SharedDeviceNetworkClient _client;
 
-  // Server state
-  final List<String> _serverLogs = [];
-  bool _isBackgroundServiceRunning = false;
-  bool _permissionGranted = false;
-
-  // Client state
-  late SharedDeviceNetworkClient _client;
+  final List<String> _logs = [];
   List<SharedDevice> _discoveredDevices = [];
   bool _isDiscovering = false;
-  final List<String> _clientLogs = [];
-
-  // Controllers for adding a new shared device on server
-  final _deviceIdController = TextEditingController(text: 'printer-bt-01');
-  final _deviceNameController = TextEditingController(text: 'Bluetooth Receipt Printer');
-  final _deviceDescController = TextEditingController(text: 'Kitchen 80mm ESC/POS Thermal Printer');
-  final _pairKeyController = TextEditingController(text: '1234');
-
-  // Client input
-  final _clientMessageController = TextEditingController(text: '{"action":"PRINT","text":"Hello Receipt"}');
-  final _clientPairKeyController = TextEditingController(text: '1234');
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
 
-    SharedDeviceNetworkServer.onDataReceived((deviceId, message) async {
-      final log = 'Received for "$deviceId": "$message"';
-      if (mounted) {
-        setState(() {
-          _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] $log');
-        });
-      }
+    // 2. Register global incoming message handler
+    SharedDeviceNetworkServer.onDataReceived((deviceId, message) {
+      _log('📥 Host received for "$deviceId": $message');
       return Status.success(
-        message: 'Handled by shared device $deviceId',
-        data: {'deviceId': deviceId, 'processedAt': DateTime.now().toIso8601String()},
+        message: 'Processed by $deviceId',
+        data: {'echo': message, 'time': DateTime.now().toIso8601String()},
       );
     });
 
-    _client = SharedDeviceNetworkClient(
-      deviceId: 'mobile-client-01',
-      deviceName: 'Waiter App',
-      discoveryPort: 8889,
-      defaultTimeout: const Duration(seconds: 4),
-    );
+    // 3. Listen to server logs
+    SharedDeviceNetworkServer.onLog((msg) => _log('⚙️ $msg'));
 
-    _initBackgroundServiceAndSync();
+    // 4. Request Android runtime permissions (Notification + Battery exemption)
+    if (Platform.isAndroid) {
+      SharedDeviceNetworkServer.requestPermissions();
+    }
+
+    // 5. Initialize client for testing discovery and dispatch
+    _client = SharedDeviceNetworkClient(
+      deviceId: 'client-app-01',
+      deviceName: 'Waiter Tablet',
+      discoveryPort: 8889,
+      defaultTimeout: const Duration(seconds: 3),
+    );
   }
 
-  Future<void> _initBackgroundServiceAndSync() async {
-    // 1. Request Android notifications & battery optimization permissions
-    if (Platform.isAndroid) {
-      _permissionGranted = await SharedDeviceNetworkServer.requestPermissions();
-    }
-
-    // 2. Attach listeners for background server logs
-    SharedDeviceNetworkServer.onLog((log) {
-      if (mounted) {
-        setState(() {
-          if (!_serverLogs.contains(log)) {
-            _serverLogs.insert(0, log);
-          }
-        });
-      }
+  void _log(String text) {
+    if (!mounted) return;
+    final time = DateTime.now().toIso8601String().substring(11, 19);
+    setState(() {
+      _logs.insert(0, '[$time] $text');
+      if (_logs.length > 50) _logs.removeLast();
     });
-
-    // 3. Check initial running status & logs
-    final isRunning = await SharedDeviceNetworkServer.isServiceRunning();
-    final storedLogs = await SharedDeviceNetworkServer.getLogs();
-
-    if (mounted) {
-      setState(() {
-        _isBackgroundServiceRunning = isRunning;
-        for (final log in storedLogs) {
-          if (!_serverLogs.contains(log)) {
-            _serverLogs.add(log);
-          }
-        }
-      });
-    }
   }
 
   @override
   void dispose() {
-    _client.dispose();
     _tabController.dispose();
-    _deviceIdController.dispose();
-    _deviceNameController.dispose();
-    _deviceDescController.dispose();
-    _pairKeyController.dispose();
-    _clientMessageController.dispose();
-    _clientPairKeyController.dispose();
+    _client.dispose();
     super.dispose();
   }
 
   // --- Server Actions ---
 
-  Future<void> _addSharedDevice() async {
-    final devId = _deviceIdController.text.trim();
-    final devName = _deviceNameController.text.trim();
-    final devDesc = _deviceDescController.text.trim();
-    final pairKey = _pairKeyController.text.trim().isNotEmpty ? _pairKeyController.text.trim() : null;
+  int _sampleCounter = 1;
 
-    if (devId.isEmpty || devName.isEmpty) return;
-
-    await SharedDeviceNetworkServer.addDevice(
-      devId,
-      devName,
-      deviceDescription: devDesc.isNotEmpty ? devDesc : null,
+  Future<void> _addDevice({
+    required String id,
+    required String name,
+    String? description,
+    String? pairKey,
+  }) async {
+    final success = await SharedDeviceNetworkServer.addDevice(
+      id,
+      name,
+      deviceDescription: description,
       pairKey: pairKey,
     );
-
-    final isRunning = await SharedDeviceNetworkServer.isServiceRunning();
-
-    setState(() {
-      _isBackgroundServiceRunning = isRunning || SharedDeviceNetworkServer.isRunning;
-      _serverLogs.insert(
-        0,
-        '[${DateTime.now().toIso8601String().substring(11, 19)}] Added shared device "$devName" ($devId). Server active: $_isBackgroundServiceRunning',
-      );
-    });
+    if (success) {
+      _log('✅ Shared device added: $name ($id)');
+      setState(() {});
+    }
   }
 
-  Future<void> _removeSharedDevice(String deviceId) async {
-    await SharedDeviceNetworkServer.removeDevice(deviceId);
-    final isRunning = await SharedDeviceNetworkServer.isServiceRunning();
-    setState(() {
-      _isBackgroundServiceRunning = isRunning;
-      _serverLogs.insert(
-        0,
-        '[${DateTime.now().toIso8601String().substring(11, 19)}] Removed device "$deviceId". Remaining: ${SharedDeviceNetworkServer.deviceCount}',
-      );
-    });
+  Future<void> _removeDevice(String deviceId) async {
+    final success = await SharedDeviceNetworkServer.removeDevice(deviceId);
+    if (success) {
+      _log('🗑️ Removed device: $deviceId');
+      setState(() {});
+    }
   }
 
-  Future<void> _stopBackgroundServer() async {
-    await SharedDeviceNetworkServer.stop();
-    setState(() {
-      _isBackgroundServiceRunning = false;
-      _serverLogs.insert(
-        0,
-        '[${DateTime.now().toIso8601String().substring(11, 19)}] Server stopped manually by user.',
-      );
-    });
-  }
+  void _showAddDeviceDialog({bool autoFillSample = false}) {
+    final idController = TextEditingController();
+    final nameController = TextEditingController();
+    final descController = TextEditingController();
+    final keyController = TextEditingController();
 
-  Future<void> _clearLogs() async {
-    await SharedDeviceNetworkServer.clearLogs();
-    setState(() {
-      _serverLogs.clear();
-    });
+    final samples = [
+      {
+        'id': 'printer-bt',
+        'name': 'Kitchen ESC/POS Printer',
+        'desc': 'Bluetooth 80mm Thermal Receipt Printer',
+        'key': '1234',
+      },
+      {
+        'id': 'scanner-usb',
+        'name': 'Counter 2D Barcode Scanner',
+        'desc': 'USB Handheld QR / Barcode Scanner',
+        'key': 'pass456',
+      },
+      {
+        'id': 'drawer-pos',
+        'name': 'Automated Cash Drawer',
+        'desc': 'RJ11 24V Heavy Duty Cash Drawer',
+        'key': '',
+      },
+      {
+        'id': 'scale-deli',
+        'name': 'Deli Digital Weighing Scale',
+        'desc': 'Serial RS232 Accurate Weight Scale',
+        'key': '7788',
+      },
+      {
+        'id': 'screen-cust',
+        'name': 'Secondary Customer Display',
+        'desc': 'HDMI Pole Display 2x20 Lines',
+        'key': '',
+      },
+    ];
+
+    void fillRandom() {
+      final sample = samples[Random().nextInt(samples.length)];
+      final num = _sampleCounter++;
+      idController.text = '${sample['id']}-$num';
+      nameController.text = '${sample['name']} #$num';
+      descController.text = sample['desc']!;
+      keyController.text = sample['key']!;
+    }
+
+    if (autoFillSample) {
+      fillRandom();
+    }
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('Add Device', style: TextStyle(fontWeight: FontWeight.bold)),
+              IconButton.filledTonal(
+                tooltip: 'Randomly fill form',
+                icon: const Icon(Icons.refresh),
+                onPressed: () {
+                  fillRandom();
+                  setDialogState(() {});
+                },
+              ),
+            ],
+          ),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: idController,
+                  decoration: const InputDecoration(
+                    labelText: 'Device ID',
+                    hintText: 'e.g. printer-bt-01',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Device Name',
+                    hintText: 'e.g. Kitchen Printer',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: descController,
+                  decoration: const InputDecoration(
+                    labelText: 'Description (Optional)',
+                    hintText: 'e.g. Thermal 80mm ESC/POS',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: keyController,
+                  decoration: const InputDecoration(
+                    labelText: 'Pair Key (Optional)',
+                    hintText: 'Password for this device',
+                    border: OutlineInputBorder(),
+                    isDense: true,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton.icon(
+              onPressed: () async {
+                final id = idController.text.trim();
+                final name = nameController.text.trim();
+                final desc = descController.text.trim();
+                final key = keyController.text.trim();
+                if (id.isNotEmpty && name.isNotEmpty) {
+                  Navigator.pop(ctx);
+                  await _addDevice(
+                    id: id,
+                    name: name,
+                    description: desc.isNotEmpty ? desc : null,
+                    pairKey: key.isNotEmpty ? key : null,
+                  );
+                }
+              },
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('Add Device'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // --- Client Actions ---
 
-  Future<void> _startDiscovery() async {
-    setState(() {
-      _isDiscovering = true;
-      _discoveredDevices = [];
-    });
-
+  Future<void> _discoverDevices() async {
+    setState(() => _isDiscovering = true);
+    _log('🔍 Client broadcasting discovery request...');
     try {
-      final devices = await _client.discoverDevicesOnce(
-        timeout: const Duration(seconds: 3),
-      );
+      final found = await _client.discoverDevicesOnce(timeout: const Duration(seconds: 2));
       setState(() {
-        _discoveredDevices = devices;
+        _discoveredDevices = found;
         _isDiscovering = false;
-        _clientLogs.insert(0, 'Discovery finished: found ${devices.length} shared device(s).');
       });
+      _log('🔍 Found ${found.length} shared device(s) on LAN');
     } catch (e) {
-      setState(() {
-        _isDiscovering = false;
-        _clientLogs.insert(0, 'Discovery error: $e');
-      });
+      setState(() => _isDiscovering = false);
+      _log('❌ Discovery error: $e');
     }
   }
 
-  Future<void> _sendMessageToDevice(SharedDevice device) async {
-    final msg = _clientMessageController.text.trim();
-    if (msg.isEmpty) return;
-
-    _clientLogs.insert(0, 'Sending to ${device.deviceName} (${device.deviceId})...');
-    setState(() {});
-
+  Future<void> _sendMessage(SharedDevice dev) async {
+    _log('📤 Client sending to "${dev.deviceName}" (${dev.deviceId})...');
     final status = await _client.sendToDevice(
-      device.deviceId,
-      msg,
-      targetDevice: device,
-      pairKey: _clientPairKeyController.text.trim().isNotEmpty
-          ? _clientPairKeyController.text.trim()
-          : null,
-      timeout: const Duration(seconds: 4),
+      dev.deviceId,
+      {'action': 'PRINT_TEST', 'item': 'Coffee x2', 'total': 9.50},
+      targetDevice: dev,
     );
-
-    setState(() {
-      if (status.isSuccess) {
-        _clientLogs.insert(0, '✅ ACK Received from ${device.deviceId}: "${status.message}"');
-      } else {
-        _clientLogs.insert(0, '❌ Error [${status.statusCode}]: ${status.message}');
-      }
-    });
+    if (status.isSuccess) {
+      _log('✅ ACK from ${dev.deviceId}: ${status.message}');
+    } else {
+      _log('❌ Failed [${status.statusCode}]: ${status.message}');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isRunning = SharedDeviceNetworkServer.isRunning;
+    final deviceCount = SharedDeviceNetworkServer.deviceCount;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Shared Device Network'),
         bottom: TabBar(
           controller: _tabController,
           tabs: [
-            Tab(
-              icon: const Icon(Icons.hub),
-              text: 'Host Server (${SharedDeviceNetworkServer.deviceCount})',
-            ),
-            Tab(
-              icon: const Icon(Icons.devices),
-              text: 'Client Discover (${_discoveredDevices.length})',
-            ),
+            Tab(icon: const Icon(Icons.router), text: 'Host Server ($deviceCount)'),
+            Tab(icon: const Icon(Icons.devices), text: 'Client (${_discoveredDevices.length})'),
           ],
         ),
       ),
-      body: TabBarView(
-        controller: _tabController,
+      body: Column(
         children: [
-          _buildServerTab(),
-          _buildClientTab(),
+          // Status banner
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            color: isRunning ? Colors.green.shade50 : Colors.amber.shade50,
+            child: Row(
+              children: [
+                Icon(
+                  isRunning ? Icons.check_circle : Icons.pause_circle_outline,
+                  color: isRunning ? Colors.green.shade700 : Colors.amber.shade800,
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isRunning
+                        ? 'Server Active • Sharing $deviceCount device(s) • Notification shown'
+                        : 'Server Inactive • Notification stopped (add a device below to start)',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: isRunning ? Colors.green.shade900 : Colors.amber.shade900,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Main Tabs
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
+              children: [
+                _buildHostServerTab(),
+                _buildClientTab(),
+              ],
+            ),
+          ),
+
+          // Collapsible Activity Logs
+          _buildLogsPanel(),
         ],
       ),
     );
   }
 
-  Widget _buildServerTab() {
-    final bool active = _isBackgroundServiceRunning || SharedDeviceNetworkServer.isRunning;
+  Widget _buildHostServerTab() {
+    final devices = SharedDeviceNetworkServer.devices;
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Status header
-        Card(
-          color: active
-              ? Colors.green.withValues(alpha: 0.15)
-              : Colors.orange.withValues(alpha: 0.15),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+        // Centered Big Add Device Button with Sample Refresh Button
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      active ? Icons.radio_button_checked : Icons.radio_button_off,
-                      color: active ? Colors.green : Colors.orange,
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        active ? 'Background Service Running (Port 8888)' : 'Background Service Inactive',
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                      ),
-                    ),
-                    if (active)
-                      FilledButton.tonalIcon(
-                        onPressed: _stopBackgroundServer,
-                        icon: const Icon(Icons.stop, size: 16),
-                        label: const Text('Stop'),
-                        style: FilledButton.styleFrom(
-                          visualDensity: VisualDensity.compact,
-                          backgroundColor: Colors.red.withValues(alpha: 0.15),
-                          foregroundColor: Colors.red,
-                        ),
-                      ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  active
-                      ? '✅ Persistent Service Active: Keeps running & listening even when app is killed/swiped away.'
-                      : 'Add a connected device below to automatically start the background server.',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: active ? Colors.green.shade800 : Colors.orange.shade800,
-                  ),
-                ),
-                if (Platform.isAndroid && !_permissionGranted) ...[
-                  const SizedBox(height: 8),
-                  InkWell(
-                    onTap: () async {
-                      final granted = await SharedDeviceNetworkServer.requestPermissions();
-                      setState(() => _permissionGranted = granted);
-                    },
-                    child: const Row(
-                      children: [
-                        Icon(Icons.warning_amber_rounded, size: 16, color: Colors.amber),
-                        SizedBox(width: 4),
-                        Text(
-                          'Tap here to grant notification & battery permissions',
-                          style: TextStyle(fontSize: 12, color: Colors.blue, decoration: TextDecoration.underline),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        // Shared Devices List
-        Card(
-          elevation: 2,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Connected Devices Shared by this Phone (${SharedDeviceNetworkServer.deviceCount})',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                if (SharedDeviceNetworkServer.devices.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Text('No devices shared yet. Add a Bluetooth printer or USB scanner below.'),
-                  )
-                else
-                  ...SharedDeviceNetworkServer.devices.map(
-                    (dev) => ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const CircleAvatar(child: Icon(Icons.print)),
-                      title: Text(dev.deviceName),
-                      subtitle: Text('${dev.deviceId}${dev.deviceDescription != null ? " • ${dev.deviceDescription}" : ""}'),
-                      trailing: IconButton(
-                        icon: const Icon(Icons.delete_outline, color: Colors.red),
-                        tooltip: 'Remove device',
-                        onPressed: () => _removeSharedDevice(dev.deviceId),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        // Add Device Form
-        Card(
-          elevation: 2,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Share a New Connected Device (e.g. Bluetooth/USB)',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _deviceIdController,
-                  decoration: const InputDecoration(
-                    labelText: 'Device ID (e.g. printer-bt-01, scanner-01)',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: _deviceNameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Device Name (e.g. Kitchen ESC/POS Printer)',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: _deviceDescController,
-                  decoration: const InputDecoration(
-                    labelText: 'Description (Optional)',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: _pairKeyController,
-                  decoration: const InputDecoration(
-                    labelText: 'Pair Key (Optional password for this device)',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 14),
                 FilledButton.icon(
-                  onPressed: _addSharedDevice,
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add Shared Device & Auto-Start Server'),
+                  onPressed: () => _showAddDeviceDialog(),
+                  icon: const Icon(Icons.add, size: 24),
+                  label: const Text(
+                    'Add Device',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  style: FilledButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                IconButton.filledTonal(
+                  tooltip: 'Sample (randomly fills form)',
+                  icon: const Icon(Icons.refresh),
+                  iconSize: 22,
+                  style: IconButton.styleFrom(
+                    padding: const EdgeInsets.all(14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  ),
+                  onPressed: () => _showAddDeviceDialog(autoFillSample: true),
                 ),
               ],
             ),
           ),
         ),
-        const SizedBox(height: 16),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text('Server Logs', style: Theme.of(context).textTheme.titleSmall),
-            if (_serverLogs.isNotEmpty)
-              TextButton(
-                onPressed: _clearLogs,
-                child: const Text('Clear Logs', style: TextStyle(fontSize: 12)),
-              ),
-          ],
-        ),
+        const SizedBox(height: 12),
+
+        // Shared devices list
+        Text('Currently Shared on LAN (${devices.length})', style: Theme.of(context).textTheme.titleSmall),
         const SizedBox(height: 8),
-        Container(
-          height: 180,
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
+        if (devices.isEmpty)
+          Card(
+            elevation: 0,
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: _serverLogs.isEmpty
-              ? const Center(child: Text('No activity logged.'))
-              : ListView.builder(
-                  itemCount: _serverLogs.length,
-                  itemBuilder: (context, i) => Text(
-                    _serverLogs[i],
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                  ),
+            child: const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(
+                child: Text(
+                  'No peripherals shared yet.\nTap a button above to add a device and auto-start the server.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13),
                 ),
-        ),
+              ),
+            ),
+          )
+        else
+          ...devices.map(
+            (dev) => Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: CircleAvatar(
+                  child: Icon(dev.deviceId.contains('scanner') ? Icons.qr_code_scanner : Icons.print),
+                ),
+                title: Text(dev.deviceName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('${dev.deviceId} • ${dev.deviceDescription ?? "No description"}'),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.red),
+                  tooltip: 'Remove device',
+                  onPressed: () => _removeDevice(dev.deviceId),
+                ),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -496,110 +454,93 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        Card(
-          elevation: 2,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Discovered Shared Devices',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                    FilledButton.tonalIcon(
-                      onPressed: _isDiscovering ? null : _startDiscovery,
-                      icon: _isDiscovering
-                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.refresh),
-                      label: const Text('Discover'),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                if (_discoveredDevices.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Text('Press "Discover" to find shared devices available on this WiFi/network.'),
-                  )
-                else
-                  ..._discoveredDevices.map(
-                    (device) => ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: const CircleAvatar(child: Icon(Icons.devices_other)),
-                      title: Text(device.deviceName),
-                      subtitle: Text('${device.deviceId} (${device.deviceIp}:${device.devicePort})'),
-                      trailing: FilledButton.icon(
-                        icon: const Icon(Icons.send, size: 16),
-                        label: const Text('Send'),
-                        onPressed: () => _sendMessageToDevice(device),
-                      ),
-                    ),
-                  ),
-              ],
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('Discovered LAN Peripherals', style: Theme.of(context).textTheme.titleSmall),
+            FilledButton.tonalIcon(
+              onPressed: _isDiscovering ? null : _discoverDevices,
+              icon: _isDiscovering
+                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh, size: 16),
+              label: const Text('Discover'),
             ),
-          ),
+          ],
         ),
-        const SizedBox(height: 14),
-        Card(
-          elevation: 2,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Message & Pair Key',
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: _clientMessageController,
-                  decoration: const InputDecoration(
-                    labelText: 'Payload / Command (JSON or string)',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: _clientPairKeyController,
-                  decoration: const InputDecoration(
-                    labelText: 'Device Pair Key',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 16),
-        Text('Client Dispatch Logs', style: Theme.of(context).textTheme.titleSmall),
-        const SizedBox(height: 8),
-        Container(
-          height: 180,
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
+        const SizedBox(height: 10),
+        if (_discoveredDevices.isEmpty)
+          Card(
+            elevation: 0,
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(8),
+            child: const Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(
+                child: Text(
+                  'No devices discovered yet.\nTap "Discover" to scan for shared peripherals on this WiFi.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13),
+                ),
+              ),
+            ),
+          )
+        else
+          ..._discoveredDevices.map(
+            (dev) => Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: const CircleAvatar(child: Icon(Icons.devices)),
+                title: Text(dev.deviceName, style: const TextStyle(fontWeight: FontWeight.bold)),
+                subtitle: Text('${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}'),
+                trailing: FilledButton.icon(
+                  icon: const Icon(Icons.send, size: 14),
+                  label: const Text('Send'),
+                  onPressed: () => _sendMessage(dev),
+                ),
+              ),
+            ),
           ),
-          child: _clientLogs.isEmpty
-              ? const Center(child: Text('No client transmissions yet.'))
+      ],
+    );
+  }
+
+  Widget _buildLogsPanel() {
+    return Container(
+      height: 140,
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        border: Border(top: BorderSide(color: Colors.grey.shade300)),
+      ),
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text('Activity Logs', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                if (_logs.isNotEmpty)
+                  InkWell(
+                    onTap: () => setState(() => _logs.clear()),
+                    child: const Text('Clear', style: TextStyle(fontSize: 11, color: Colors.blue)),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: _logs.isEmpty
+              ? const Center(child: Text('No activity yet', style: TextStyle(fontSize: 11, color: Colors.grey)))
               : ListView.builder(
-                  itemCount: _clientLogs.length,
-                  itemBuilder: (context, i) => Text(
-                    _clientLogs[i],
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  itemCount: _logs.length,
+                  itemBuilder: (ctx, i) => Text(
+                    _logs[i],
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
                   ),
                 ),
-        ),
-      ],
+          ),
+        ],
+      ),
     );
   }
 }

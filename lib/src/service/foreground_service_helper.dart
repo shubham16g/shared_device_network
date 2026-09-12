@@ -278,7 +278,7 @@ class SharedDeviceForegroundService {
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
         autoStart: false,
-        autoStartOnBoot: true,
+        autoStartOnBoot: false,
         isForegroundMode: true,
         initialNotificationTitle: notificationChannelName,
         initialNotificationContent: notificationChannelDescription,
@@ -480,6 +480,13 @@ class SharedDeviceForegroundService {
       }
     } catch (_) {}
     return [];
+  }
+
+  /// Clears stored shared devices from persistent storage.
+  static Future<void> clearStoredDevices() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('server_devices');
   }
 
   /// Retrieves recent background logs saved in SharedPreferences.
