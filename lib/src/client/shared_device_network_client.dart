@@ -6,7 +6,6 @@ import '../models/shared_device.dart';
 import '../models/shared_device_response.dart';
 import '../utils/message_id_generator.dart';
 import '../utils/network_utils.dart';
-import 'client_config.dart';
 
 /// A UDP client that enables local device discovery and incremental ACK-based message transmission.
 class SharedDeviceNetworkClient {
@@ -49,22 +48,6 @@ class SharedDeviceNetworkClient {
     this.defaultServerPort = 8888,
     this.clientPort = 0,
   });
-
-  /// Creates a [SharedDeviceNetworkClient] with a [ClientConfig] object.
-  factory SharedDeviceNetworkClient.fromConfig({
-    String deviceId = '',
-    String deviceName = 'SharedDeviceClient',
-    ClientConfig config = const ClientConfig(),
-  }) {
-    return SharedDeviceNetworkClient(
-      deviceId: deviceId,
-      deviceName: deviceName,
-      defaultTimeout: config.defaultTimeout,
-      discoveryPort: config.discoveryPort,
-      defaultServerPort: config.defaultServerPort,
-      clientPort: config.clientPort,
-    );
-  }
 
   /// Map of known devices discovered or registered.
   Map<String, SharedDevice> get knownDevices => Map.unmodifiable(_knownDevices);
