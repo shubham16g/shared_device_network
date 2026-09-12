@@ -3,7 +3,7 @@ import 'dart:io';
 
 import '../models/network_packet.dart';
 import '../models/shared_device.dart';
-import '../models/status.dart';
+import '../models/shared_device_response.dart';
 import '../utils/message_id_generator.dart';
 import '../utils/network_utils.dart';
 import 'client_config.dart';
@@ -36,7 +36,7 @@ class SharedDeviceNetworkClient {
   bool _isInitialized = false;
 
   /// Pending ACK completers keyed by incremental messageId.
-  final Map<int, Completer<Status>> _pendingAcks = {};
+  final Map<int, Completer<SharedDeviceResponse>> _pendingAcks = {};
 
   /// Cache of discovered devices keyed by deviceId.
   final Map<String, SharedDevice> _knownDevices = {};
@@ -126,8 +126,8 @@ class SharedDeviceNetworkClient {
     if (completer != null && !completer.isCompleted) {
       final status = packet.status ??
           (packet.payload is Map
-              ? Status.fromMap(Map<String, dynamic>.from(packet.payload as Map))
-              : Status.success(data: packet.payload));
+              ? SharedDeviceResponse.fromMap(Map<String, dynamic>.from(packet.payload as Map))
+              : SharedDeviceResponse.success(data: packet.payload));
       completer.complete(status);
     }
   }
@@ -296,7 +296,7 @@ class SharedDeviceNetworkClient {
   /// Increments the message ID for this transmission.
   /// If the target device's IP and port are known or supplied in [targetDevice]/[ip]/[port],
   /// the message is sent directly. Otherwise, it attempts discovery to locate the device.
-  Future<Status> sendToDevice(
+  Future<SharedDeviceResponse> sendToDevice(
     String deviceId,
     dynamic message, {
     String? pairKey,
@@ -331,7 +331,7 @@ class SharedDeviceNetworkClient {
 
     // If still not found, return deviceNotFound status
     if (targetIp == null || targetPort == null) {
-      return Status.deviceNotFound(
+      return SharedDeviceResponse.deviceNotFound(
         message: 'Could not find device "$deviceId" on the network.',
       );
     }
@@ -347,7 +347,7 @@ class SharedDeviceNetworkClient {
   }
 
   /// Alias for [sendToDevice] to support alternative spelling.
-  Future<Status> sendToDeivce(
+  Future<SharedDeviceResponse> sendToDeivce(
     String deviceId,
     dynamic message, {
     String? pairKey,
@@ -367,7 +367,7 @@ class SharedDeviceNetworkClient {
       );
 
   /// Sends a message directly to an IP and Port with an incremental message ID and waits for ACK.
-  Future<Status> sendToAddress(
+  Future<SharedDeviceResponse> sendToAddress(
     String ip,
     int port,
     dynamic message, {
@@ -390,7 +390,7 @@ class SharedDeviceNetworkClient {
       replyPort: _socket!.port,
     );
 
-    final completer = Completer<Status>();
+    final completer = Completer<SharedDeviceResponse>();
     _pendingAcks[messageId] = completer;
 
     // Timeout timer
@@ -398,7 +398,7 @@ class SharedDeviceNetworkClient {
       final pending = _pendingAcks.remove(messageId);
       if (pending != null && !pending.isCompleted) {
         pending.complete(
-          Status.timeout(
+          SharedDeviceResponse.timeout(
             message: 'Timed out waiting for ACK from $ip:$port for message ID #$messageId',
             timeout: actualTimeout,
           ),
@@ -417,7 +417,7 @@ class SharedDeviceNetworkClient {
     } catch (e) {
       timer.cancel();
       _pendingAcks.remove(messageId);
-      return Status.error(
+      return SharedDeviceResponse.error(
         e.toString(),
         message: 'Failed to send UDP datagram to $ip:$port',
       );
@@ -430,7 +430,7 @@ class SharedDeviceNetworkClient {
 
     for (final completer in _pendingAcks.values) {
       if (!completer.isCompleted) {
-        completer.complete(Status.error('Client disposed'));
+        completer.complete(SharedDeviceResponse.error('Client disposed'));
       }
     }
     _pendingAcks.clear();

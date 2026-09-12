@@ -1,7 +1,7 @@
 library;
 
-// Models
 export 'src/models/shared_device.dart';
+export 'src/models/shared_device_response.dart';
 export 'src/models/status.dart';
 export 'src/models/paired_device.dart';
 export 'src/models/shared_device_record.dart';

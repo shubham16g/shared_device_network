@@ -8,7 +8,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/shared_device_record.dart';
-import '../models/status.dart';
+import '../models/shared_device_response.dart';
 import '../server/shared_device_network_server.dart';
 
 @pragma('vm:entry-point')
@@ -73,7 +73,7 @@ void onStart(ServiceInstance service) async {
         }
       } catch (_) {}
 
-      return Status.success(
+      return SharedDeviceResponse.success(
         message: 'Processed by background service for device $deviceId',
         data: {
           'deviceId': deviceId,

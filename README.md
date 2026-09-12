@@ -26,7 +26,7 @@ A Flutter and Dart package for sharing connected hardware/peripheral devices (e.
 
 - **📡 Multi-Device UDP Discovery**: Emits all shared connected devices hosted on a machine/phone to discovering clients.
 - **⚡ Automatic Lifecycle Management**: UDP server and foreground notification auto-start on the first `addDevice()` and auto-stop when the last device is removed.
-- **🔢 Incremental Message IDs & Reliable ACKs**: Tracks message transmission with incremental IDs and returns structured `Status` responses.
+- **🔢 Incremental Message IDs & Reliable ACKs**: Tracks message transmission with incremental IDs and returns structured `SharedDeviceResponse` responses.
 - **🔐 Per-Device Pairing & Authorization**: Optional `pairKey` per shared device.
 - **📱 Persistent Background Service**: Keeps the server running and peripherals shared even when the app UI is closed or killed.
 - **🌐 Cross-Platform**: Android, iOS, Windows, macOS, Linux.
@@ -72,13 +72,13 @@ void main() async {
 
     if (deviceId == 'printer-bt-01') {
       // Forward print bytes to Bluetooth printer...
-      return Status.success(message: 'Receipt printed successfully');
+      return SharedDeviceResponse.success(message: 'Receipt printed successfully');
     } else if (deviceId == 'scanner-usb-01') {
       // Trigger barcode scan...
-      return Status.success(message: 'Scan triggered', data: {'barcode': '890123456789'});
+      return SharedDeviceResponse.success(message: 'Scan triggered', data: {'barcode': '890123456789'});
     }
 
-    return Status.deviceNotFound();
+    return SharedDeviceResponse.deviceNotFound();
   });
 
   runApp(const MyApp());
@@ -119,6 +119,7 @@ void main() async {
   final client = SharedDeviceNetworkClient(
     deviceId: 'waiter-tablet-01',
     deviceName: 'Waiter Tablet #1',
+    discoveryPort: 8889,
     defaultTimeout: Duration(seconds: 4),
   );
 
@@ -129,23 +130,23 @@ void main() async {
   }
 
   // Send print job to the Bluetooth Printer
-  final printStatus = await client.sendToDevice(
+  final printResponse = await client.sendToDevice(
     'printer-bt-01',
     {'cmd': 'PRINT_BILL', 'table': 4, 'total': 45.50},
   );
 
-  if (printStatus.isSuccess) {
-    print('✅ Printed: ${printStatus.message}');
+  if (printResponse.isSuccess) {
+    print('✅ Printed: ${printResponse.message}');
   }
 
   // Send command to the Barcode Scanner with pairKey
-  final scanStatus = await client.sendToDevice(
+  final scanResponse = await client.sendToDevice(
     'scanner-usb-01',
     {'cmd': 'TRIGGER_SCAN'},
     pairKey: 'scanner-key-123',
   );
 
-  print('Scan Result: ${scanStatus.data}');
+  print('Scan Result: ${scanResponse.data}');
 }
 ```
 

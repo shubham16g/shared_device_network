@@ -4,12 +4,12 @@ import 'dart:io';
 import '../models/network_packet.dart';
 import '../models/shared_device.dart';
 import '../models/shared_device_record.dart';
-import '../models/status.dart';
+import '../models/shared_device_response.dart';
 import '../utils/network_utils.dart';
 import '../service/foreground_service_helper.dart';
 
 /// Callback invoked when a message is received for a shared connected device.
-typedef OnDataReceivedCallback = Future<Status> Function(
+typedef OnDataReceivedCallback = Future<SharedDeviceResponse> Function(
   String deviceId,
   dynamic message,
 );
@@ -83,8 +83,8 @@ class SharedDeviceNetworkServer {
 
   /// Registers the handler for data/commands received for any shared peripheral device.
   ///
-  /// The [callback] can return a [Status], a custom data payload (e.g. [Map] or [String]),
-  /// or void. If void or null is returned, a successful [Status] is automatically sent back to the client.
+  /// The [callback] can return a [SharedDeviceResponse], a custom data payload (e.g. [Map] or [String]),
+  /// or void. If void or null is returned, a successful [SharedDeviceResponse] is automatically sent back to the client.
   static void onDataReceived(FutureOr<dynamic> Function(String deviceId, dynamic message) callback) {
     _globalDataCallback = callback;
   }
@@ -251,24 +251,24 @@ class SharedDeviceNetworkServer {
     );
   }
 
-  static Future<Status> _dispatchDataReceived(String deviceId, dynamic message) async {
+  static Future<SharedDeviceResponse> _dispatchDataReceived(String deviceId, dynamic message) async {
     if (_globalDataCallback == null) {
-      return Status.success(
+      return SharedDeviceResponse.success(
         message: 'Received for $deviceId',
         data: {'deviceId': deviceId},
       );
     }
     try {
       final res = await _globalDataCallback!(deviceId, message);
-      if (res is Status) {
+      if (res is SharedDeviceResponse) {
         return res;
       }
-      return Status.success(
+      return SharedDeviceResponse.success(
         message: 'Processed by shared device $deviceId',
         data: res,
       );
     } catch (e) {
-      return Status.error(
+      return SharedDeviceResponse.error(
         e.toString(),
         message: 'Exception in onDataReceived for device "$deviceId"',
       );
@@ -648,7 +648,7 @@ class SharedDeviceUdpServer {
     if (targetId != null && targetId.isNotEmpty) {
       matchedDevice = _devices[targetId];
       if (matchedDevice == null) {
-        final notFoundStatus = Status.deviceNotFound(
+        final notFoundStatus = SharedDeviceResponse.deviceNotFound(
           message: 'Device "$targetId" is not hosted on this server.',
         );
         _sendAck(messageId, senderId, notFoundStatus, remoteAddress, packet.senderPort ?? remotePort);
@@ -657,7 +657,7 @@ class SharedDeviceUdpServer {
     } else if (_devices.length == 1) {
       matchedDevice = _devices.values.first;
     } else {
-      final badStatus = Status.badRequest(
+      final badStatus = SharedDeviceResponse.badRequest(
         message: 'Multiple devices hosted. Please specify targetDeviceId in message.',
       );
       _sendAck(messageId, senderId, badStatus, remoteAddress, packet.senderPort ?? remotePort);
@@ -667,7 +667,7 @@ class SharedDeviceUdpServer {
     // Verify pairKey if configured on this specific shared device
     if (matchedDevice.pairKey != null && matchedDevice.pairKey!.isNotEmpty) {
       if (packet.pairKey != matchedDevice.pairKey) {
-        final unauthStatus = Status.unauthorized(
+        final unauthStatus = SharedDeviceResponse.unauthorized(
           message: 'Invalid pair key provided for shared device "${matchedDevice.deviceId}".',
         );
         _sendAck(messageId, senderId, unauthStatus, remoteAddress, packet.senderPort ?? remotePort);
@@ -678,11 +678,11 @@ class SharedDeviceUdpServer {
     _messageStreamController.add(packet);
 
     // Call onDataReceived for this specific device
-    Status status;
+    SharedDeviceResponse status;
     try {
       status = await onDataReceived(matchedDevice.deviceId, packet.payload);
     } catch (e) {
-      status = Status.error(
+      status = SharedDeviceResponse.error(
         e.toString(),
         message: 'Exception occurred processing message for device "${matchedDevice.deviceId}"',
       );
@@ -700,7 +700,7 @@ class SharedDeviceUdpServer {
   void _sendAck(
     int messageId,
     String targetDeviceId,
-    Status status,
+    SharedDeviceResponse status,
     InternetAddress remoteAddress,
     int remotePort,
   ) {

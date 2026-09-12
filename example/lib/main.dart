@@ -57,7 +57,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     // 2. Register global incoming message handler
     SharedDeviceNetworkServer.onDataReceived((deviceId, message) {
       _log('📥 Host received for "$deviceId": $message');
-      return Status.success(
+      return SharedDeviceResponse.success(
         message: 'Processed by $deviceId',
         data: {'echo': message, 'time': DateTime.now().toIso8601String()},
       );

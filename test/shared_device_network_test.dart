@@ -50,9 +50,9 @@ void main() {
     });
   });
 
-  group('Status Model Tests', () {
-    test('Status.success initializes correct values', () {
-      final status = Status.success(
+  group('SharedDeviceResponse Model Tests', () {
+    test('SharedDeviceResponse.success initializes correct values', () {
+      final status = SharedDeviceResponse.success(
         message: 'Order received',
         data: {'orderId': 123},
       );
@@ -64,8 +64,8 @@ void main() {
       expect(status.error, isNull);
     });
 
-    test('Status.error initializes correct error values', () {
-      final status = Status.error(
+    test('SharedDeviceResponse.error initializes correct error values', () {
+      final status = SharedDeviceResponse.error(
         'Database write failed',
         message: 'Could not persist order',
         statusCode: 500,
@@ -77,8 +77,8 @@ void main() {
       expect(status.message, 'Could not persist order');
     });
 
-    test('Status.timeout initializes timeout status', () {
-      final status = Status.timeout(
+    test('SharedDeviceResponse.timeout initializes timeout status', () {
+      final status = SharedDeviceResponse.timeout(
         timeout: const Duration(seconds: 3),
       );
 
@@ -88,8 +88,8 @@ void main() {
       expect(status.message.contains('3000ms'), isTrue);
     });
 
-    test('Status.unauthorized initializes 401 status', () {
-      final status = Status.unauthorized(message: 'Invalid key');
+    test('SharedDeviceResponse.unauthorized initializes 401 status', () {
+      final status = SharedDeviceResponse.unauthorized(message: 'Invalid key');
 
       expect(status.isSuccess, isFalse);
       expect(status.statusCode, 401);
@@ -97,20 +97,27 @@ void main() {
       expect(status.message, 'Invalid key');
     });
 
-    test('Status serialization and deserialization', () {
-      final status = Status.success(
+    test('SharedDeviceResponse serialization and deserialization', () {
+      final status = SharedDeviceResponse.success(
         message: 'OK',
         data: 'custom_data',
         statusCode: 200,
       );
 
       final jsonStr = status.toJson();
-      final fromJson = Status.fromJson(jsonStr);
+      final fromJson = SharedDeviceResponse.fromJson(jsonStr);
 
       expect(fromJson.isSuccess, isTrue);
       expect(fromJson.statusCode, 200);
       expect(fromJson.message, 'OK');
       expect(fromJson.data, 'custom_data');
+    });
+
+    test('Status typedef alias works for backward compatibility', () {
+      final status = Status.success(message: 'Legacy OK');
+      expect(status, isA<SharedDeviceResponse>());
+      expect(status.isSuccess, isTrue);
+      expect(status.message, 'Legacy OK');
     });
   });
 
@@ -197,8 +204,8 @@ void main() {
       expect(decoded.payload['action'], 'PRINT_BILL');
     });
 
-    test('Encodes and decodes ACK packet with Status payload', () {
-      final ackStatus = Status.success(message: 'Printed successfully', data: {'jobId': 99});
+    test('Encodes and decodes ACK packet with SharedDeviceResponse payload', () {
+      final ackStatus = SharedDeviceResponse.success(message: 'Printed successfully', data: {'jobId': 99});
       final ackPacket = NetworkPacket.ack(
         messageId: 42,
         senderDeviceId: 'server-01',
@@ -238,7 +245,7 @@ void main() {
         discoveryPort: testDiscoveryPort,
         onDataReceived: (deviceId, message) async {
           receivedData[deviceId] = message;
-          return Status.success(
+          return SharedDeviceResponse.success(
             message: 'Handled by $deviceId',
             data: {'deviceId': deviceId, 'echo': message},
           );
@@ -345,7 +352,7 @@ void main() {
       server = SharedDeviceUdpServer(
         port: testServerPort,
         discoveryPort: testDiscoveryPort,
-        onDataReceived: (deviceId, message) async => Status.success(),
+        onDataReceived: (deviceId, message) async => SharedDeviceResponse.success(),
       );
 
       client = SharedDeviceNetworkClient(

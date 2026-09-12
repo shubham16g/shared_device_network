@@ -1,5 +1,5 @@
 import 'dart:convert';
-import 'status.dart';
+import 'shared_device_response.dart';
 
 /// Supported types of network packets in the shared device network protocol.
 enum PacketType {
@@ -50,8 +50,8 @@ class NetworkPacket {
   /// Main payload of the packet.
   final dynamic payload;
 
-  /// Status object (used in ACK packets).
-  final Status? status;
+  /// Status / response object (used in ACK packets).
+  final SharedDeviceResponse? status;
 
   /// Creation timestamp (milliseconds since epoch).
   final int timestamp;
@@ -134,7 +134,7 @@ class NetworkPacket {
   factory NetworkPacket.ack({
     required int messageId,
     required String senderDeviceId,
-    required Status status,
+    required SharedDeviceResponse status,
     String? targetDeviceId,
   }) {
     return NetworkPacket(
@@ -182,7 +182,7 @@ class NetworkPacket {
       payload: map['payload'],
       status: map['status'] != null
           ? (map['status'] is Map
-              ? Status.fromMap(Map<String, dynamic>.from(map['status'] as Map))
+              ? SharedDeviceResponse.fromMap(Map<String, dynamic>.from(map['status'] as Map))
               : null)
           : null,
       timestamp: (map['timestamp'] is int)
