@@ -39,12 +39,12 @@ void onStart(ServiceInstance service) async {
   }
 
   // 1. Instantiate the UDP server inside this persistent background isolate
-  late final SharedDeviceNetworkServer server;
-  server = SharedDeviceNetworkServer(
+  late final SharedDeviceUdpServer server;
+  server = SharedDeviceUdpServer(
     port: port,
     discoveryPort: discoveryPort,
     autoStartOnFirstDevice: false, // Explicitly managed in background isolate
-    autoStopOnEmptyDevices: false, // Never self-terminate background service
+    autoStopOnEmptyDevices: false, // Explicitly managed in background isolate
     enableForegroundService: false, // Already inside the background isolate
     onDataReceived: (deviceId, message) async {
       receivedCount++;
@@ -84,15 +84,7 @@ void onStart(ServiceInstance service) async {
     },
   );
 
-  // 2. Start the UDP server sockets immediately in background isolate
-  try {
-    await server.start();
-    await logEvent('Background UDP server listening on port $port (Discovery: $discoveryPort)');
-  } catch (e) {
-    await logEvent('Failed to start UDP sockets: $e');
-  }
-
-  // 3. Load pre-configured shared devices
+  // 2. Load pre-configured shared devices
   if (devicesJson != null && devicesJson.isNotEmpty) {
     try {
       final dynamic list = json.decode(devicesJson);
@@ -113,6 +105,21 @@ void onStart(ServiceInstance service) async {
     } catch (e) {
       await logEvent('Error loading stored devices: $e');
     }
+  }
+
+  // Only run if at least one device is shared!
+  if (server.deviceCount == 0) {
+    await logEvent('No devices shared. Background service stopping.');
+    service.stopSelf();
+    return;
+  }
+
+  // 3. Start the UDP server sockets in background isolate
+  try {
+    await server.start();
+    await logEvent('Background UDP server listening on port $port (Discovery: $discoveryPort)');
+  } catch (e) {
+    await logEvent('Failed to start UDP sockets: $e');
   }
 
   // Update notification with initial state
@@ -137,6 +144,7 @@ void onStart(ServiceInstance service) async {
     }
 
     if (devId.isNotEmpty) {
+      final wasEmpty = server.deviceCount == 0;
       await server.addDevice(
         devId,
         devName,
@@ -144,6 +152,14 @@ void onStart(ServiceInstance service) async {
         pairKey: key,
         metadata: meta,
       );
+      if (wasEmpty || !server.isRunning) {
+        try {
+          await server.start();
+          await logEvent('Background UDP server started for $devName');
+        } catch (e) {
+          await logEvent('Error starting UDP sockets: $e');
+        }
+      }
       _persistCurrentDevices(server, prefs);
       _updateNotificationText(server, service, port: port);
       await logEvent('Added shared device: $devName ($devId)');
@@ -159,8 +175,14 @@ void onStart(ServiceInstance service) async {
     if (devId.isNotEmpty) {
       await server.removeDevice(devId);
       _persistCurrentDevices(server, prefs);
-      _updateNotificationText(server, service, port: port);
-      await logEvent('Removed device: $devId. Remaining: ${server.deviceCount}');
+      if (server.devices.isEmpty) {
+        await logEvent('All devices removed. Stopping background service and UDP server.');
+        await server.stop();
+        service.stopSelf();
+      } else {
+        _updateNotificationText(server, service, port: port);
+        await logEvent('Removed device: $devId. Remaining: ${server.deviceCount}');
+      }
       service.invoke('devicesUpdated', {
         'devices': server.devices.map((d) => d.toMap()).toList(),
       });
@@ -187,30 +209,26 @@ void onStart(ServiceInstance service) async {
 }
 
 void _updateNotificationText(
-  SharedDeviceNetworkServer server,
+  SharedDeviceUdpServer server,
   ServiceInstance service, {
   int port = 8888,
 }) {
   if (service is AndroidServiceInstance) {
     final count = server.deviceCount;
     if (count == 0) {
-      service.setForegroundNotificationInfo(
-        title: 'Shared Device Server Active',
-        content: 'Listening on port $port • Ready for devices',
-      );
-    } else {
-      final dev = server.devices.first;
-      final title = count == 1 ? '${dev.deviceName} Active' : 'Shared Device Server ($count Active)';
-      final text = 'Sharing $count connected peripheral${count == 1 ? "" : "s"} on network';
-      service.setForegroundNotificationInfo(
-        title: title,
-        content: text,
-      );
+      return;
     }
+    final dev = server.devices.first;
+    final title = count == 1 ? '${dev.deviceName} Active' : 'Shared Device Server ($count Active)';
+    final text = 'Sharing $count connected peripheral${count == 1 ? "" : "s"} on network';
+    service.setForegroundNotificationInfo(
+      title: title,
+      content: text,
+    );
   }
 }
 
-void _persistCurrentDevices(SharedDeviceNetworkServer server, SharedPreferences prefs) {
+void _persistCurrentDevices(SharedDeviceUdpServer server, SharedPreferences prefs) {
   final list = server.devices.map((d) => d.toMap()).toList();
   prefs.setString('server_devices', json.encode(list));
 }
@@ -382,6 +400,11 @@ class SharedDeviceForegroundService {
       'server_devices',
       json.encode(currentDevices.map((d) => d.toMap()).toList()),
     );
+
+    if (currentDevices.isEmpty) {
+      await stopService();
+      return;
+    }
 
     final isRunning = await _service.isRunning();
     if (!isRunning) return;

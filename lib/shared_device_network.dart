@@ -15,8 +15,6 @@ export 'src/server/server_config.dart';
 export 'src/client/shared_device_network_client.dart';
 export 'src/client/client_config.dart';
 
-// Service
-export 'src/service/foreground_service_helper.dart';
 
 // Utils
 export 'src/utils/network_utils.dart';

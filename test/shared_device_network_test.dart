@@ -220,7 +220,7 @@ void main() {
   });
 
   group('UDP Server & Client Shared Devices Multi-Device Tests', () {
-    late SharedDeviceNetworkServer server;
+    late SharedDeviceUdpServer server;
     late SharedDeviceNetworkClient client;
     const testServerPort = 9988;
     const testDiscoveryPort = 9989;
@@ -233,7 +233,7 @@ void main() {
     test('1 UDP server shares multiple connected devices; auto-starts on first, auto-stops when empty', () async {
       final receivedData = <String, dynamic>{};
 
-      server = SharedDeviceNetworkServer(
+      server = SharedDeviceUdpServer(
         port: testServerPort,
         discoveryPort: testDiscoveryPort,
         onDataReceived: (deviceId, message) async {
@@ -342,7 +342,7 @@ void main() {
     });
 
     test('Client handles timeout when target device is unreachable or fails to ACK', () async {
-      server = SharedDeviceNetworkServer(
+      server = SharedDeviceUdpServer(
         port: testServerPort,
         discoveryPort: testDiscoveryPort,
         onDataReceived: (deviceId, message) async => Status.success(),
@@ -364,6 +364,114 @@ void main() {
       expect(status.isSuccess, isFalse);
       expect(status.statusCode, 408);
       expect(status.error, 'TIMEOUT');
+    });
+  });
+
+  group('SharedDeviceNetworkServer Static API Tests', () {
+    const staticTestPort = 9977;
+    const staticTestDiscoveryPort = 9978;
+    late SharedDeviceNetworkClient client;
+
+    setUp(() {
+      SharedDeviceNetworkServer.resetStaticState();
+    });
+
+    tearDown(() async {
+      await SharedDeviceNetworkServer.stop();
+      SharedDeviceNetworkServer.resetStaticState();
+      try {
+        await client.dispose();
+      } catch (_) {}
+    });
+
+    test('Static API: init, onDataReceived, auto-start on addDevice, and auto-stop on removeDevice', () async {
+      final receivedData = <String, dynamic>{};
+
+      // 1. Init without starting UDP server yet
+      await SharedDeviceNetworkServer.init(
+        port: staticTestPort,
+        discoveryPort: staticTestDiscoveryPort,
+        enableForegroundService: false,
+      );
+
+      expect(SharedDeviceNetworkServer.isRunning, isFalse);
+      expect(SharedDeviceNetworkServer.deviceCount, 0);
+      expect(SharedDeviceNetworkServer.devices, isEmpty);
+
+      // 2. Set onDataReceived callback
+      SharedDeviceNetworkServer.onDataReceived((deviceId, message) {
+        receivedData[deviceId] = message;
+        return {'handled': true, 'deviceId': deviceId};
+      });
+
+      // 3. Add first device -> starts the UDP server automatically
+      final added1 = await SharedDeviceNetworkServer.addDevice(
+        'static-printer-01',
+        'Kitchen Bluetooth Printer',
+        deviceDescription: 'Thermal ESC/POS',
+      );
+
+      expect(added1, isTrue);
+      expect(SharedDeviceNetworkServer.isRunning, isTrue);
+      expect(SharedDeviceNetworkServer.deviceCount, 1);
+      expect(SharedDeviceNetworkServer.hasDevice('static-printer-01'), isTrue);
+      expect(SharedDeviceNetworkServer.getDevice('static-printer-01')?.deviceName, 'Kitchen Bluetooth Printer');
+
+      // 4. Add second device
+      final added2 = await SharedDeviceNetworkServer.addDevice(
+        'static-scanner-01',
+        'USB Barcode Scanner',
+        pairKey: 'pass456',
+      );
+
+      expect(added2, isTrue);
+      expect(SharedDeviceNetworkServer.deviceCount, 2);
+
+      // 5. Client discovers both shared devices
+      client = SharedDeviceNetworkClient(
+        deviceId: 'pos-terminal-01',
+        discoveryPort: staticTestDiscoveryPort,
+        defaultTimeout: const Duration(seconds: 3),
+      );
+
+      final discovered = await client.discoverDevicesOnce(
+        timeout: const Duration(milliseconds: 1500),
+      );
+
+      expect(discovered.length, 2);
+      expect(discovered.any((d) => d.deviceId == 'static-printer-01'), isTrue);
+      expect(discovered.any((d) => d.deviceId == 'static-scanner-01'), isTrue);
+
+      // 6. Send to printer via client
+      final printStatus = await client.sendToDevice(
+        'static-printer-01',
+        {'cmd': 'PRINT_ORDER', 'items': 3},
+      );
+
+      expect(printStatus.isSuccess, isTrue);
+      expect(receivedData['static-printer-01']['cmd'], 'PRINT_ORDER');
+
+      // 7. Send to scanner with valid pairKey
+      final scanStatus = await client.sendToDevice(
+        'static-scanner-01',
+        {'cmd': 'TRIGGER_SCAN'},
+        pairKey: 'pass456',
+      );
+
+      expect(scanStatus.isSuccess, isTrue);
+      expect(receivedData['static-scanner-01']['cmd'], 'TRIGGER_SCAN');
+
+      // 8. Remove 1st device -> 1 remaining, server stays running
+      final removed1 = await SharedDeviceNetworkServer.removeDevice('static-printer-01');
+      expect(removed1, isTrue);
+      expect(SharedDeviceNetworkServer.deviceCount, 1);
+      expect(SharedDeviceNetworkServer.isRunning, isTrue);
+
+      // 9. Remove 2nd device -> 0 remaining, server automatically stops
+      final removed2 = await SharedDeviceNetworkServer.removeDevice('static-scanner-01');
+      expect(removed2, isTrue);
+      expect(SharedDeviceNetworkServer.deviceCount, 0);
+      expect(SharedDeviceNetworkServer.isRunning, isFalse);
     });
   });
 }

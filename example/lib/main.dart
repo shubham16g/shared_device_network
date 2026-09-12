@@ -5,7 +5,12 @@ import 'package:shared_device_network/shared_device_network.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (Platform.isAndroid || Platform.isIOS) {
-    await SharedDeviceForegroundService.init();
+    await SharedDeviceNetworkServer.init(
+      port: 8888,
+      discoveryPort: 8889,
+      notificationTitle: 'Shared Device Server Active',
+      notificationText: 'Sharing connected devices on network...',
+    );
   }
   runApp(const SharedDeviceApp());
 }
@@ -48,7 +53,6 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   late TabController _tabController;
 
   // Server state
-  late SharedDeviceNetworkServer _server;
   final List<String> _serverLogs = [];
   bool _isBackgroundServiceRunning = false;
   bool _permissionGranted = false;
@@ -74,21 +78,18 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
 
-    _server = SharedDeviceNetworkServer(
-      port: 8888,
-      discoveryPort: 8889,
-      enableForegroundService: true,
-      onDataReceived: (deviceId, message) async {
-        final log = 'Received for "$deviceId": "$message"';
+    SharedDeviceNetworkServer.onDataReceived((deviceId, message) async {
+      final log = 'Received for "$deviceId": "$message"';
+      if (mounted) {
         setState(() {
           _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] $log');
         });
-        return Status.success(
-          message: 'Handled by shared device $deviceId',
-          data: {'deviceId': deviceId, 'processedAt': DateTime.now().toIso8601String()},
-        );
-      },
-    );
+      }
+      return Status.success(
+        message: 'Handled by shared device $deviceId',
+        data: {'deviceId': deviceId, 'processedAt': DateTime.now().toIso8601String()},
+      );
+    });
 
     _client = SharedDeviceNetworkClient(
       deviceId: 'mobile-client-01',
@@ -103,18 +104,23 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   Future<void> _initBackgroundServiceAndSync() async {
     // 1. Request Android notifications & battery optimization permissions
     if (Platform.isAndroid) {
-      _permissionGranted = await SharedDeviceForegroundService.requestPermissions();
+      _permissionGranted = await SharedDeviceNetworkServer.requestPermissions();
     }
 
-    // 2. Attach listeners for background events
-    SharedDeviceForegroundService.addMessageCallback(_handleBackgroundServerData);
-    SharedDeviceForegroundService.addLogCallback(_handleBackgroundLog);
-    SharedDeviceForegroundService.addDeviceCallback(_handleDevicesUpdated);
+    // 2. Attach listeners for background server logs
+    SharedDeviceNetworkServer.onLog((log) {
+      if (mounted) {
+        setState(() {
+          if (!_serverLogs.contains(log)) {
+            _serverLogs.insert(0, log);
+          }
+        });
+      }
+    });
 
-    // 3. Restore any previously running state from background service
-    final isRunning = await SharedDeviceForegroundService.isRunning();
-    final storedDevices = await SharedDeviceForegroundService.getStoredDevices();
-    final storedLogs = await SharedDeviceForegroundService.getStoredLogs();
+    // 3. Check initial running status & logs
+    final isRunning = await SharedDeviceNetworkServer.isServiceRunning();
+    final storedLogs = await SharedDeviceNetworkServer.getLogs();
 
     if (mounted) {
       setState(() {
@@ -124,72 +130,12 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
             _serverLogs.add(log);
           }
         }
-        for (final dev in storedDevices) {
-          if (!_server.hasDevice(dev.deviceId)) {
-            _server.addDevice(
-              dev.deviceId,
-              dev.deviceName,
-              deviceDescription: dev.deviceDescription,
-              pairKey: dev.pairKey,
-              metadata: dev.metadata,
-            );
-          }
-        }
-      });
-    }
-  }
-
-  void _handleBackgroundServerData(Object data) {
-    if (data is Map) {
-      final map = Map<String, dynamic>.from(data);
-      if (map['event'] == 'onDataReceived') {
-        final devId = map['deviceId'];
-        final msg = map['message'];
-        if (mounted) {
-          setState(() {
-            _serverLogs.insert(0, '[${DateTime.now().toIso8601String().substring(11, 19)}] (BG) For $devId: "$msg"');
-          });
-        }
-      }
-    }
-  }
-
-  void _handleBackgroundLog(String log) {
-    if (mounted) {
-      setState(() {
-        if (!_serverLogs.contains(log)) {
-          _serverLogs.insert(0, log);
-        }
-      });
-    }
-  }
-
-  void _handleDevicesUpdated(List<SharedDeviceRecord> devices) {
-    if (mounted) {
-      setState(() {
-        for (final dev in devices) {
-          if (!_server.hasDevice(dev.deviceId)) {
-            _server.addDevice(
-              dev.deviceId,
-              dev.deviceName,
-              deviceDescription: dev.deviceDescription,
-              pairKey: dev.pairKey,
-              metadata: dev.metadata,
-            );
-          }
-        }
       });
     }
   }
 
   @override
   void dispose() {
-    // Detach callbacks so we don't leak listeners, but DO NOT stop the server
-    // so it continues running in the background isolate even when UI is killed!
-    SharedDeviceForegroundService.removeMessageCallback(_handleBackgroundServerData);
-    SharedDeviceForegroundService.removeLogCallback(_handleBackgroundLog);
-    SharedDeviceForegroundService.removeDeviceCallback(_handleDevicesUpdated);
-
     _client.dispose();
     _tabController.dispose();
     _deviceIdController.dispose();
@@ -211,17 +157,17 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
 
     if (devId.isEmpty || devName.isEmpty) return;
 
-    await _server.addDevice(
+    await SharedDeviceNetworkServer.addDevice(
       devId,
       devName,
       deviceDescription: devDesc.isNotEmpty ? devDesc : null,
       pairKey: pairKey,
     );
 
-    final isRunning = await SharedDeviceForegroundService.isRunning();
+    final isRunning = await SharedDeviceNetworkServer.isServiceRunning();
 
     setState(() {
-      _isBackgroundServiceRunning = isRunning || _server.isRunning;
+      _isBackgroundServiceRunning = isRunning || SharedDeviceNetworkServer.isRunning;
       _serverLogs.insert(
         0,
         '[${DateTime.now().toIso8601String().substring(11, 19)}] Added shared device "$devName" ($devId). Server active: $_isBackgroundServiceRunning',
@@ -230,31 +176,30 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _removeSharedDevice(String deviceId) async {
-    await _server.removeDevice(deviceId);
-    final isRunning = await SharedDeviceForegroundService.isRunning();
+    await SharedDeviceNetworkServer.removeDevice(deviceId);
+    final isRunning = await SharedDeviceNetworkServer.isServiceRunning();
     setState(() {
       _isBackgroundServiceRunning = isRunning;
       _serverLogs.insert(
         0,
-        '[${DateTime.now().toIso8601String().substring(11, 19)}] Removed device "$deviceId". Remaining: ${_server.deviceCount}',
+        '[${DateTime.now().toIso8601String().substring(11, 19)}] Removed device "$deviceId". Remaining: ${SharedDeviceNetworkServer.deviceCount}',
       );
     });
   }
 
   Future<void> _stopBackgroundServer() async {
-    await _server.stop();
-    await SharedDeviceForegroundService.stopService(clearDevices: false);
+    await SharedDeviceNetworkServer.stop();
     setState(() {
       _isBackgroundServiceRunning = false;
       _serverLogs.insert(
         0,
-        '[${DateTime.now().toIso8601String().substring(11, 19)}] Background service stopped manually by user.',
+        '[${DateTime.now().toIso8601String().substring(11, 19)}] Server stopped manually by user.',
       );
     });
   }
 
   Future<void> _clearLogs() async {
-    await SharedDeviceForegroundService.clearStoredLogs();
+    await SharedDeviceNetworkServer.clearLogs();
     setState(() {
       _serverLogs.clear();
     });
@@ -321,7 +266,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
           tabs: [
             Tab(
               icon: const Icon(Icons.hub),
-              text: 'Host Server (${_server.deviceCount})',
+              text: 'Host Server (${SharedDeviceNetworkServer.deviceCount})',
             ),
             Tab(
               icon: const Icon(Icons.devices),
@@ -341,7 +286,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildServerTab() {
-    final bool active = _isBackgroundServiceRunning || _server.isRunning;
+    final bool active = _isBackgroundServiceRunning || SharedDeviceNetworkServer.isRunning;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -396,7 +341,7 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
                   const SizedBox(height: 8),
                   InkWell(
                     onTap: () async {
-                      final granted = await SharedDeviceForegroundService.requestPermissions();
+                      final granted = await SharedDeviceNetworkServer.requestPermissions();
                       setState(() => _permissionGranted = granted);
                     },
                     child: const Row(
@@ -426,17 +371,17 @@ class _MainScreenState extends State<MainScreen> with SingleTickerProviderStateM
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Connected Devices Shared by this Phone (${_server.deviceCount})',
+                  'Connected Devices Shared by this Phone (${SharedDeviceNetworkServer.deviceCount})',
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 8),
-                if (_server.devices.isEmpty)
+                if (SharedDeviceNetworkServer.devices.isEmpty)
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 12),
                     child: Text('No devices shared yet. Add a Bluetooth printer or USB scanner below.'),
                   )
                 else
-                  ..._server.devices.map(
+                  ...SharedDeviceNetworkServer.devices.map(
                     (dev) => ListTile(
                       contentPadding: EdgeInsets.zero,
                       leading: const CircleAvatar(child: Icon(Icons.print)),
