@@ -19,23 +19,22 @@ void main() {
     });
 
     test('Server lifecycle, device management, discovery, and message dispatch', () async {
-      // 1. Initialize server using constructor
-      server = SharedDeviceNetworkServer(
-        onMessageReceived: (deviceId, message) async {
-          if (deviceId == 'printer-bt-01') {
-            return SharedDeviceResponse.success(
-              message: 'Receipt printed successfully',
-            );
-          } else if (deviceId == 'scanner-usb-01') {
-            return SharedDeviceResponse.success(
-              message: 'Scan triggered',
-              data: {'barcode': '890123456789'},
-            );
-          }
+      // 1. Initialize server using constructor and onMessageReceived method
+      server = SharedDeviceNetworkServer();
+      server.onMessageReceived((deviceId, message) async {
+        if (deviceId == 'printer-bt-01') {
+          return SharedDeviceResponse.success(
+            message: 'Receipt printed successfully',
+          );
+        } else if (deviceId == 'scanner-usb-01') {
+          return SharedDeviceResponse.success(
+            message: 'Scan triggered',
+            data: {'barcode': '890123456789'},
+          );
+        }
 
-          return SharedDeviceResponse.deviceNotFound();
-        },
-      );
+        return SharedDeviceResponse.deviceNotFound();
+      });
 
       expect(server.isRunning, isFalse);
       await server.start(port: testPort, discoveryPort: testDiscoveryPort);
@@ -129,11 +128,10 @@ void main() {
     });
 
     test('Supports pair key security on devices', () async {
-      server = SharedDeviceNetworkServer(
-        onMessageReceived: (deviceId, message) async {
-          return SharedDeviceResponse.success(message: 'Authorized access');
-        },
-      );
+      server = SharedDeviceNetworkServer();
+      server.onMessageReceived((deviceId, message) async {
+        return SharedDeviceResponse.success(message: 'Authorized access');
+      });
       await server.start(port: 18890, discoveryPort: 18891);
 
       await server.addDevice(
@@ -187,19 +185,42 @@ void main() {
     });
 
     test('start() respects default ports and discoverPort alias', () async {
-      final defaultServer = SharedDeviceNetworkServer(
-        onMessageReceived: (deviceId, message) => null,
-      );
+      final defaultServer = SharedDeviceNetworkServer();
       expect(defaultServer.port, 8888);
       expect(defaultServer.discoveryPort, 8889);
 
-      final customServer = SharedDeviceNetworkServer(
-        onMessageReceived: (deviceId, message) => null,
-      );
+      final customServer = SharedDeviceNetworkServer();
       await customServer.start(port: 19888, discoverPort: 19889);
       expect(customServer.port, 19888);
       expect(customServer.discoveryPort, 19889);
       await customServer.dispose();
+    });
+
+    test('Dynamic callback configuration with server.onMessageReceived', () async {
+      server = SharedDeviceNetworkServer();
+      await server.start(port: 19990, discoveryPort: 19991);
+      await server.addDevice('test-dyn', 'Dynamic Device');
+
+      client = SharedDeviceNetworkClient(
+        deviceId: 'dyn-client',
+        discoveryPort: 19991,
+        defaultServerPort: 19990,
+        defaultTimeout: const Duration(seconds: 2),
+      );
+
+      // 1. Before handler registered -> returns 404 No message handler
+      final noHandlerRes = await client.sendToDevice('test-dyn', 'ping');
+      expect(noHandlerRes.isSuccess, isFalse);
+      expect(noHandlerRes.statusCode, 404);
+
+      // 2. Dynamically register handler via server.onMessageReceived(...)
+      server.onMessageReceived((deviceId, message) {
+        return SharedDeviceResponse.success(message: 'pong from $deviceId');
+      });
+
+      final handlerRes = await client.sendToDevice('test-dyn', 'ping');
+      expect(handlerRes.isSuccess, isTrue);
+      expect(handlerRes.message, 'pong from test-dyn');
     });
   });
 

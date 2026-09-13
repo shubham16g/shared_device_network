@@ -37,7 +37,7 @@ class _HomeScreenState extends State<HomeScreen>
   late final TabController _tabController;
   late final SharedDeviceNetworkClient _client;
 
-  late final SharedDeviceNetworkServer server;
+  final SharedDeviceNetworkServer server = SharedDeviceNetworkServer();
 
   final List<String> _logs = [];
   List<SharedDevice> _discoveredDevices = [];
@@ -48,15 +48,14 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
 
-    server = SharedDeviceNetworkServer(
-      onMessageReceived: (deviceId, message) async {
-        _log('📥 Host received for "$deviceId": $message');
-        return SharedDeviceResponse.success(
-          message: 'Processed by $deviceId',
-          data: {'echo': message, 'time': DateTime.now().toIso8601String()},
-        );
-      },
-    );
+    
+    server.onMessageReceived((deviceId, message) async {
+      _log('📥 Host received for "$deviceId": $message');
+      return SharedDeviceResponse.success(
+        message: 'Processed by $deviceId',
+        data: {'echo': message, 'time': DateTime.now().toIso8601String()},
+      );
+    });
     server.start(port: 8888, discoveryPort: 8889);
 
     // 3. Initialize client for testing discovery and dispatch

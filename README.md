@@ -54,7 +54,7 @@ flutter pub get
 
 ### 1. Host Device: Sharing Connected Devices
 
-Instantiate `SharedDeviceNetworkServer` with your message handling callback, start it, and register your peripherals:
+Instantiate `SharedDeviceNetworkServer`, register your message handling callback with `server.onMessageReceived(...)`, start it, and register your peripherals:
 
 ```dart
 import 'package:flutter/material.dart';
@@ -63,32 +63,33 @@ import 'package:shared_device_network/shared_device_network.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 1. Instantiate the server with the message handler
-  final server = SharedDeviceNetworkServer(
-    onMessageReceived: (deviceId, message) async {
-      print('📥 Host received for "$deviceId": $message');
+  // 1. Instantiate the server
+  final server = SharedDeviceNetworkServer();
 
-      if (deviceId == 'printer-bt-01') {
-        // Forward print bytes to Bluetooth printer...
-        return SharedDeviceResponse.success(
-          message: 'Receipt printed successfully',
-          data: {'printedAt': DateTime.now().toIso8601String()},
-        );
-      } else if (deviceId == 'scanner-usb-01') {
-        // Trigger barcode scan...
-        return SharedDeviceResponse.success(
-          message: 'Scan completed',
-          data: {'barcode': '890123456789'},
-        );
-      }
+  // 2. Register callback for incoming messages/commands
+  server.onMessageReceived((deviceId, message) async {
+    print('📥 Host received for "$deviceId": $message');
 
-      return SharedDeviceResponse.deviceNotFound(
-        message: 'Device "$deviceId" not found',
+    if (deviceId == 'printer-bt-01') {
+      // Forward print bytes to Bluetooth printer...
+      return SharedDeviceResponse.success(
+        message: 'Receipt printed successfully',
+        data: {'printedAt': DateTime.now().toIso8601String()},
       );
-    },
-  );
+    } else if (deviceId == 'scanner-usb-01') {
+      // Trigger barcode scan...
+      return SharedDeviceResponse.success(
+        message: 'Scan completed',
+        data: {'barcode': '890123456789'},
+      );
+    }
 
-  // 2. Start listening on UDP sockets (with optional custom ports)
+    return SharedDeviceResponse.deviceNotFound(
+      message: 'Device "$deviceId" not found',
+    );
+  });
+
+  // 3. Start listening on UDP sockets (with optional custom ports)
   await server.start(
     port: 8888,
     discoveryPort: 8889,
@@ -179,7 +180,8 @@ void main() async {
 
 | Method / Property | Description |
 | :--- | :--- |
-| `SharedDeviceNetworkServer({required onMessageReceived})` | Creates a new server instance. |
+| `SharedDeviceNetworkServer()` | Creates a new server instance. |
+| `onMessageReceived(callback)` | Registers callback invoked when a message is received for a peripheral. |
 | `start({port = 8888, discoveryPort = 8889, discoverPort})` | Binds the UDP data and discovery sockets and begins listening. |
 | `port` | Active UDP data port. |
 | `discoveryPort` | Active UDP discovery broadcast port. |

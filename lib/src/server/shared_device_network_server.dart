@@ -22,24 +22,25 @@ typedef OnDataReceivedCallback = OnMessageReceivedCallback;
 ///
 /// ### Quick Start:
 /// ```dart
-/// final server = SharedDeviceNetworkServer(
-///   onMessageReceived: (deviceId, message) async {
-///     print('Received command for device $deviceId: $message');
+/// final server = SharedDeviceNetworkServer();
 ///
-///     if (deviceId == 'printer-bt-01') {
-///       // Forward print bytes to Bluetooth printer...
-///       return SharedDeviceResponse.success(message: 'Receipt printed successfully');
-///     } else if (deviceId == 'scanner-usb-01') {
-///       // Trigger barcode scan...
-///       return SharedDeviceResponse.success(
-///         message: 'Scan triggered',
-///         data: {'barcode': '890123456789'},
-///       );
-///     }
+/// server.onMessageReceived((deviceId, message) async {
+///   print('Received command for device $deviceId: $message');
 ///
-///     return SharedDeviceResponse.deviceNotFound();
-///   },
-/// );
+///   if (deviceId == 'printer-bt-01') {
+///     // Forward print bytes to Bluetooth printer...
+///     return SharedDeviceResponse.success(message: 'Receipt printed successfully');
+///   } else if (deviceId == 'scanner-usb-01') {
+///     // Trigger barcode scan...
+///     return SharedDeviceResponse.success(
+///       message: 'Scan triggered',
+///       data: {'barcode': '890123456789'},
+///     );
+///   }
+///
+///   return SharedDeviceResponse.deviceNotFound();
+/// });
+///
 /// await server.start(port: 8888, discoveryPort: 8889);
 ///
 /// await server.addDevice(
@@ -60,8 +61,16 @@ class SharedDeviceNetworkServer {
   /// UDP discovery port for listening to client broadcast discovery (default: 8889).
   int get discoveryPort => _discoveryPort;
 
-  /// The active callback invoked when a message is received.
-  final OnMessageReceivedCallback onMessageReceived;
+  OnMessageReceivedCallback? _onMessageReceived;
+
+  /// Registers the callback invoked when a message or command is received for a shared connected peripheral.
+  void onMessageReceived(OnMessageReceivedCallback callback) {
+    _onMessageReceived = callback;
+  }
+
+  /// Backward-compatibility alias for [onMessageReceived].
+  void onDataReceived(OnMessageReceivedCallback callback) =>
+      onMessageReceived(callback);
 
   RawDatagramSocket? _dataSocket;
   RawDatagramSocket? _discoverySocket;
@@ -81,9 +90,16 @@ class SharedDeviceNetworkServer {
   static SharedDeviceNetworkServer? get instance => _instance;
 
   /// Creates a new [SharedDeviceNetworkServer] instance.
+  ///
+  /// Optionally accepts an initial [onMessageReceived] callback, or register
+  /// it dynamically using [onMessageReceived(callback)].
   SharedDeviceNetworkServer({
-    required this.onMessageReceived,
-  });
+    OnMessageReceivedCallback? onMessageReceived,
+  }) {
+    if (onMessageReceived != null) {
+      _onMessageReceived = onMessageReceived;
+    }
+  }
 
 
   // ---------------------------------------------------------------------------
@@ -382,32 +398,39 @@ class SharedDeviceNetworkServer {
 
     _messageStreamController.add(packet);
 
-    // Call onMessageReceived callback
+    // Call onMessageReceived callback if registered
     SharedDeviceResponse response;
-    try {
-      final result = await onMessageReceived(
-        matchedDevice.deviceId,
-        packet.payload,
-      );
+    final handler = _onMessageReceived;
+    if (handler != null) {
+      try {
+        final result = await handler(
+          matchedDevice.deviceId,
+          packet.payload,
+        );
 
-      if (result is SharedDeviceResponse) {
-        response = result;
-      } else if (result is Map<String, dynamic>) {
-        response = SharedDeviceResponse.success(data: result);
-      } else if (result is bool) {
-        response = result
-            ? SharedDeviceResponse.success()
-            : SharedDeviceResponse.error('Operation returned false');
-      } else if (result == null) {
-        response = SharedDeviceResponse.success();
-      } else {
-        response = SharedDeviceResponse.success(data: result);
+        if (result is SharedDeviceResponse) {
+          response = result;
+        } else if (result is Map<String, dynamic>) {
+          response = SharedDeviceResponse.success(data: result);
+        } else if (result is bool) {
+          response = result
+              ? SharedDeviceResponse.success()
+              : SharedDeviceResponse.error('Operation returned false');
+        } else if (result == null) {
+          response = SharedDeviceResponse.success();
+        } else {
+          response = SharedDeviceResponse.success(data: result);
+        }
+      } catch (e) {
+        response = SharedDeviceResponse.error(
+          e.toString(),
+          message:
+              'Exception occurred processing message for device "${matchedDevice.deviceId}"',
+        );
       }
-    } catch (e) {
-      response = SharedDeviceResponse.error(
-        e.toString(),
-        message:
-            'Exception occurred processing message for device "${matchedDevice.deviceId}"',
+    } else {
+      response = SharedDeviceResponse.deviceNotFound(
+        message: 'No message handler registered on server.',
       );
     }
 
