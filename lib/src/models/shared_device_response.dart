@@ -152,13 +152,17 @@ class SharedDeviceResponse {
   /// Creates a [SharedDeviceResponse] from a JSON string or JSON Map.
   factory SharedDeviceResponse.fromJson(dynamic source) {
     if (source is String) {
-      return SharedDeviceResponse.fromMap(json.decode(source) as Map<String, dynamic>);
+      return SharedDeviceResponse.fromMap(
+        json.decode(source) as Map<String, dynamic>,
+      );
     } else if (source is Map<String, dynamic>) {
       return SharedDeviceResponse.fromMap(source);
     } else if (source is Map) {
       return SharedDeviceResponse.fromMap(Map<String, dynamic>.from(source));
     }
-    throw ArgumentError('Invalid source type for SharedDeviceResponse.fromJson: ${source.runtimeType}');
+    throw ArgumentError(
+      'Invalid source type for SharedDeviceResponse.fromJson: ${source.runtimeType}',
+    );
   }
 
   /// Converts this [SharedDeviceResponse] to a JSON string.

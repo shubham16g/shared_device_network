@@ -63,7 +63,9 @@ class _BgServiceScreenState extends State<BgServiceScreen>
     await ServerBackgroundServiceController.initialize();
 
     // Listen to background service events
-    _statusSub = ServerBackgroundServiceController.onStatusUpdate.listen((data) {
+    _statusSub = ServerBackgroundServiceController.onStatusUpdate.listen((
+      data,
+    ) {
       if (!mounted || data == null) return;
 
       final bool running = data['isRunning'] == true;
@@ -105,7 +107,9 @@ class _BgServiceScreenState extends State<BgServiceScreen>
       }
     });
 
-    _msgSub = ServerBackgroundServiceController.onMessageReceived.listen((data) {
+    _msgSub = ServerBackgroundServiceController.onMessageReceived.listen((
+      data,
+    ) {
       if (!mounted || data == null) return;
       final deviceId = data['deviceId']?.toString() ?? 'unknown';
       final message = data['message']?.toString() ?? '';
@@ -140,7 +144,9 @@ class _BgServiceScreenState extends State<BgServiceScreen>
       );
       ServerBackgroundServiceController.requestStatus();
     } else {
-      _log('⚠️ Failed to start background service or waiting for service isolate');
+      _log(
+        '⚠️ Failed to start background service or waiting for service isolate',
+      );
     }
 
     if (mounted) {
@@ -399,7 +405,9 @@ class _BgServiceScreenState extends State<BgServiceScreen>
                 _discoveryPort = newDisc;
               });
               _setupClient();
-              _log('🔄 Restarting background server with ports $newPort / $newDisc...');
+              _log(
+                '🔄 Restarting background server with ports $newPort / $newDisc...',
+              );
               await _startBackgroundService();
             },
             child: const Text('Apply & Restart'),
@@ -423,7 +431,9 @@ class _BgServiceScreenState extends State<BgServiceScreen>
         _discoveredDevices = found;
         _isDiscovering = false;
       });
-      _log('🔍 Discovered ${found.length} device(s) on discovery port $_discoveryPort');
+      _log(
+        '🔍 Discovered ${found.length} device(s) on discovery port $_discoveryPort',
+      );
     } catch (e) {
       setState(() => _isDiscovering = false);
       _log('❌ Discovery error: $e');
@@ -568,7 +578,9 @@ class _BgServiceScreenState extends State<BgServiceScreen>
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
                 : IconButton.filledTonal(
-                    tooltip: _isServiceRunning ? 'Stop Service' : 'Start Service',
+                    tooltip: _isServiceRunning
+                        ? 'Stop Service'
+                        : 'Start Service',
                     icon: Icon(
                       _isServiceRunning ? Icons.stop : Icons.play_arrow,
                       color: _isServiceRunning ? Colors.red : Colors.green,
@@ -648,7 +660,10 @@ class _BgServiceScreenState extends State<BgServiceScreen>
                     visualDensity: VisualDensity.compact,
                     padding: const EdgeInsets.symmetric(horizontal: 8),
                   ),
-                  child: const Text('Change Ports', style: TextStyle(fontSize: 11)),
+                  child: const Text(
+                    'Change Ports',
+                    style: TextStyle(fontSize: 11),
+                  ),
                 ),
               ],
             ),
@@ -676,7 +691,9 @@ class _BgServiceScreenState extends State<BgServiceScreen>
         // Top Info & Controls
         Card(
           elevation: 0,
-          color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+          color: Theme.of(
+            context,
+          ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
             side: BorderSide(color: Colors.grey.shade300),
@@ -696,7 +713,10 @@ class _BgServiceScreenState extends State<BgServiceScreen>
                     const SizedBox(width: 8),
                     const Text(
                       'Background Service Architecture',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
                     ),
                   ],
                 ),
@@ -810,10 +830,10 @@ class _BgServiceScreenState extends State<BgServiceScreen>
                     dev.deviceId.contains('scanner')
                         ? Icons.qr_code_scanner
                         : dev.deviceId.contains('drawer')
-                            ? Icons.inventory_2
-                            : dev.deviceId.contains('scale')
-                                ? Icons.scale
-                                : Icons.print,
+                        ? Icons.inventory_2
+                        : dev.deviceId.contains('scale')
+                        ? Icons.scale
+                        : Icons.print,
                   ),
                 ),
                 title: Text(
@@ -842,7 +862,9 @@ class _BgServiceScreenState extends State<BgServiceScreen>
       children: [
         Card(
           elevation: 0,
-          color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+          color: Theme.of(
+            context,
+          ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
             side: BorderSide(color: Colors.grey.shade300),
@@ -901,120 +923,118 @@ class _BgServiceScreenState extends State<BgServiceScreen>
             ),
           )
         else
-          ..._discoveredDevices.map(
-            (dev) {
-              final pairKey = _devicePairKeys[dev.deviceId];
-              final hasKey = pairKey != null && pairKey.isNotEmpty;
+          ..._discoveredDevices.map((dev) {
+            final pairKey = _devicePairKeys[dev.deviceId];
+            final hasKey = pairKey != null && pairKey.isNotEmpty;
 
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 12,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Top Row: Device Avatar & Info
-                      Row(
-                        children: [
-                          CircleAvatar(
-                            backgroundColor: hasKey
-                                ? Colors.amber.shade100
-                                : Theme.of(context).colorScheme.primaryContainer,
-                            child: Icon(
-                              hasKey ? Icons.lock : Icons.devices,
-                              color: hasKey
-                                  ? Colors.amber.shade900
-                                  : Theme.of(
-                                      context,
-                                    ).colorScheme.onPrimaryContainer,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  dev.deviceName,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 15,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey.shade700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      const Divider(height: 1),
-                      const SizedBox(height: 8),
-                      // Below Row: Pair Key button & Send Test button
-                      Row(
-                        children: [
-                          OutlinedButton.icon(
-                            onPressed: () => _showSetPairKeyDialog(dev),
-                            icon: Icon(
-                              hasKey ? Icons.key : Icons.key_outlined,
-                              size: 15,
-                              color: hasKey
-                                  ? Colors.amber.shade900
-                                  : Colors.grey.shade700,
-                            ),
-                            label: Text(
-                              hasKey ? 'Key: $pairKey' : 'Set Pair Key',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: hasKey
-                                    ? Colors.amber.shade900
-                                    : Colors.grey.shade800,
-                                fontWeight: hasKey
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            style: OutlinedButton.styleFrom(
-                              backgroundColor: hasKey
-                                  ? Colors.amber.shade50
-                                  : null,
-                              side: BorderSide(
-                                color: hasKey
-                                    ? Colors.amber.shade400
-                                    : Colors.grey.shade400,
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
-                              ),
-                              minimumSize: Size.zero,
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
-                          ),
-                          const Spacer(),
-                          FilledButton.icon(
-                            icon: const Icon(Icons.send, size: 14),
-                            label: const Text('Send Test'),
-                            onPressed: () => _sendMessage(dev),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
                 ),
-              );
-            },
-          ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Top Row: Device Avatar & Info
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: hasKey
+                              ? Colors.amber.shade100
+                              : Theme.of(context).colorScheme.primaryContainer,
+                          child: Icon(
+                            hasKey ? Icons.lock : Icons.devices,
+                            color: hasKey
+                                ? Colors.amber.shade900
+                                : Theme.of(
+                                    context,
+                                  ).colorScheme.onPrimaryContainer,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                dev.deviceName,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    const Divider(height: 1),
+                    const SizedBox(height: 8),
+                    // Below Row: Pair Key button & Send Test button
+                    Row(
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () => _showSetPairKeyDialog(dev),
+                          icon: Icon(
+                            hasKey ? Icons.key : Icons.key_outlined,
+                            size: 15,
+                            color: hasKey
+                                ? Colors.amber.shade900
+                                : Colors.grey.shade700,
+                          ),
+                          label: Text(
+                            hasKey ? 'Key: $pairKey' : 'Set Pair Key',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: hasKey
+                                  ? Colors.amber.shade900
+                                  : Colors.grey.shade800,
+                              fontWeight: hasKey
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            backgroundColor: hasKey
+                                ? Colors.amber.shade50
+                                : null,
+                            side: BorderSide(
+                              color: hasKey
+                                  ? Colors.amber.shade400
+                                  : Colors.grey.shade400,
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                        const Spacer(),
+                        FilledButton.icon(
+                          icon: const Icon(Icons.send, size: 14),
+                          label: const Text('Send Test'),
+                          onPressed: () => _sendMessage(dev),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
       ],
     );
   }

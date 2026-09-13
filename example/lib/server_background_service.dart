@@ -423,7 +423,10 @@ class _DesktopFallbackServer {
     _logCtrl.add({'message': message, 'time': time});
   }
 
-  static Future<bool> start({required int port, required int discoveryPort}) async {
+  static Future<bool> start({
+    required int port,
+    required int discoveryPort,
+  }) async {
     _port = port;
     _discoveryPort = discoveryPort;
 
@@ -450,7 +453,9 @@ class _DesktopFallbackServer {
 
     try {
       await _server!.start(port: _port, discoveryPort: _discoveryPort);
-      _log('🚀 Background Server running on port $_port (discovery: $_discoveryPort)');
+      _log(
+        '🚀 Background Server running on port $_port (discovery: $_discoveryPort)',
+      );
       broadcastStatus();
       return true;
     } catch (e) {

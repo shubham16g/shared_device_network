@@ -182,9 +182,9 @@ You can integrate `shared_device_network` with [`flutter_background_service`](ht
 
 > **📱 Complete Working Example Included**:
 > A complete, production-ready example is available in the [`example/`](example) directory:
-> - [**`example/lib/server_background_service.dart`**](file:///e:/Projects/shared_device_network/example/lib/server_background_service.dart): Implements background isolate lifecycle, device persistence with `shared_preferences`, and bidirectional event communication between UI and background service.
-> - [**`example/lib/bg_service_screen.dart`**](file:///e:/Projects/shared_device_network/example/lib/bg_service_screen.dart): Interactive UI with server controls, hosted device manager, real-time packet logs, and an internal test client.
-> - [**`example/lib/main.dart`**](file:///e:/Projects/shared_device_network/example/lib/main.dart): Demonstrates host & client tabs with one-tap access to background service mode via the **"In Background"** button.
+> - [**`example/lib/server_background_service.dart`**](example/lib/server_background_service.dart): Implements background isolate lifecycle, device persistence with `shared_preferences`, and bidirectional event communication between UI and background service.
+> - [**`example/lib/bg_service_screen.dart`**](example/lib/bg_service_screen.dart): Interactive UI with server controls, hosted device manager, real-time packet logs, and an internal test client.
+> - [**`example/lib/main.dart`**](example/lib/main.dart): Demonstrates host & client tabs with one-tap access to background service mode via the **"In Background"** button.
 
 ### 1. Add Dependencies
 

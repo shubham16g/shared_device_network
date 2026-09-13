@@ -66,7 +66,9 @@ class SharedDevice {
     } else if (source is Map) {
       return SharedDevice.fromMap(Map<String, dynamic>.from(source));
     }
-    throw ArgumentError('Invalid source type for SharedDevice.fromJson: ${source.runtimeType}');
+    throw ArgumentError(
+      'Invalid source type for SharedDevice.fromJson: ${source.runtimeType}',
+    );
   }
 
   /// Converts this [SharedDevice] to a JSON string.

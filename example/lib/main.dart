@@ -371,11 +371,7 @@ class _HomeScreenState extends State<HomeScreen>
     );
     final status = await _client.sendToDevice(
       dev.deviceId,
-      {
-        'action': 'PRINT_TEST',
-        'item': 'Coffee x2',
-        'total': 9.50,
-      },
+      {'action': 'PRINT_TEST', 'item': 'Coffee x2', 'total': 9.50},
       targetDevice: dev,
       pairKey: pairKey != null && pairKey.isNotEmpty ? pairKey : null,
     );
@@ -609,120 +605,118 @@ class _HomeScreenState extends State<HomeScreen>
             ),
           )
         else
-          ..._discoveredDevices.map(
-            (dev) {
-              final pairKey = _devicePairKeys[dev.deviceId];
-              final hasKey = pairKey != null && pairKey.isNotEmpty;
+          ..._discoveredDevices.map((dev) {
+            final pairKey = _devicePairKeys[dev.deviceId];
+            final hasKey = pairKey != null && pairKey.isNotEmpty;
 
-              return Card(
-                margin: const EdgeInsets.only(bottom: 8),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 12,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Top Row: Device Avatar & Info
-                      Row(
-                        children: [
-                          CircleAvatar(
-                            backgroundColor: hasKey
-                                ? Colors.amber.shade100
-                                : Theme.of(context).colorScheme.primaryContainer,
-                            child: Icon(
-                              hasKey ? Icons.lock : Icons.devices,
-                              color: hasKey
-                                  ? Colors.amber.shade900
-                                  : Theme.of(
-                                      context,
-                                    ).colorScheme.onPrimaryContainer,
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  dev.deviceName,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 15,
-                                  ),
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  '${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: Colors.grey.shade700,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 10),
-                      const Divider(height: 1),
-                      const SizedBox(height: 8),
-                      // Below Row: Pair Key button & Send button
-                      Row(
-                        children: [
-                          OutlinedButton.icon(
-                            onPressed: () => _showSetPairKeyDialog(dev),
-                            icon: Icon(
-                              hasKey ? Icons.key : Icons.key_outlined,
-                              size: 15,
-                              color: hasKey
-                                  ? Colors.amber.shade900
-                                  : Colors.grey.shade700,
-                            ),
-                            label: Text(
-                              hasKey ? 'Key: $pairKey' : 'Set Pair Key',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: hasKey
-                                    ? Colors.amber.shade900
-                                    : Colors.grey.shade800,
-                                fontWeight: hasKey
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            style: OutlinedButton.styleFrom(
-                              backgroundColor: hasKey
-                                  ? Colors.amber.shade50
-                                  : null,
-                              side: BorderSide(
-                                color: hasKey
-                                    ? Colors.amber.shade400
-                                    : Colors.grey.shade400,
-                              ),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 10,
-                                vertical: 6,
-                              ),
-                              minimumSize: Size.zero,
-                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                            ),
-                          ),
-                          const Spacer(),
-                          FilledButton.icon(
-                            icon: const Icon(Icons.send, size: 14),
-                            label: const Text('Send'),
-                            onPressed: () => _sendMessage(dev),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
                 ),
-              );
-            },
-          ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Top Row: Device Avatar & Info
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: hasKey
+                              ? Colors.amber.shade100
+                              : Theme.of(context).colorScheme.primaryContainer,
+                          child: Icon(
+                            hasKey ? Icons.lock : Icons.devices,
+                            color: hasKey
+                                ? Colors.amber.shade900
+                                : Theme.of(
+                                    context,
+                                  ).colorScheme.onPrimaryContainer,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                dev.deviceName,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    const Divider(height: 1),
+                    const SizedBox(height: 8),
+                    // Below Row: Pair Key button & Send button
+                    Row(
+                      children: [
+                        OutlinedButton.icon(
+                          onPressed: () => _showSetPairKeyDialog(dev),
+                          icon: Icon(
+                            hasKey ? Icons.key : Icons.key_outlined,
+                            size: 15,
+                            color: hasKey
+                                ? Colors.amber.shade900
+                                : Colors.grey.shade700,
+                          ),
+                          label: Text(
+                            hasKey ? 'Key: $pairKey' : 'Set Pair Key',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: hasKey
+                                  ? Colors.amber.shade900
+                                  : Colors.grey.shade800,
+                              fontWeight: hasKey
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            backgroundColor: hasKey
+                                ? Colors.amber.shade50
+                                : null,
+                            side: BorderSide(
+                              color: hasKey
+                                  ? Colors.amber.shade400
+                                  : Colors.grey.shade400,
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
+                            minimumSize: Size.zero,
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                        const Spacer(),
+                        FilledButton.icon(
+                          icon: const Icon(Icons.send, size: 14),
+                          label: const Text('Send'),
+                          onPressed: () => _sendMessage(dev),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
       ],
     );
   }

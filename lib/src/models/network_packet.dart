@@ -182,13 +182,15 @@ class NetworkPacket {
       payload: map['payload'],
       status: map['status'] != null
           ? (map['status'] is Map
-              ? SharedDeviceResponse.fromMap(Map<String, dynamic>.from(map['status'] as Map))
-              : null)
+                ? SharedDeviceResponse.fromMap(
+                    Map<String, dynamic>.from(map['status'] as Map),
+                  )
+                : null)
           : null,
       timestamp: (map['timestamp'] is int)
           ? map['timestamp'] as int
           : int.tryParse(map['timestamp']?.toString() ?? '') ??
-              DateTime.now().millisecondsSinceEpoch,
+                DateTime.now().millisecondsSinceEpoch,
     );
   }
 
@@ -199,7 +201,11 @@ class NetworkPacket {
   List<int> toUtf8Bytes() => utf8.encode(toJson());
 
   /// Parses a [NetworkPacket] from UTF-8 byte datagram.
-  static NetworkPacket? fromUtf8Bytes(List<int> bytes, {String? senderIp, int? senderPort}) {
+  static NetworkPacket? fromUtf8Bytes(
+    List<int> bytes, {
+    String? senderIp,
+    int? senderPort,
+  }) {
     try {
       final jsonString = utf8.decode(bytes);
       final dynamic decoded = json.decode(jsonString);
@@ -210,7 +216,9 @@ class NetworkPacket {
           senderPort: senderPort ?? packet.senderPort,
         );
       } else if (decoded is Map) {
-        final packet = NetworkPacket.fromMap(Map<String, dynamic>.from(decoded));
+        final packet = NetworkPacket.fromMap(
+          Map<String, dynamic>.from(decoded),
+        );
         return packet.copyWith(
           senderIp: senderIp ?? packet.senderIp,
           senderPort: senderPort ?? packet.senderPort,

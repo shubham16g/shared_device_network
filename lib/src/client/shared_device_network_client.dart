@@ -107,24 +107,34 @@ class SharedDeviceNetworkClient {
     final messageId = packet.messageId!;
     final completer = _pendingAcks.remove(messageId);
     if (completer != null && !completer.isCompleted) {
-      final status = packet.status ??
+      final status =
+          packet.status ??
           (packet.payload is Map
-              ? SharedDeviceResponse.fromMap(Map<String, dynamic>.from(packet.payload as Map))
+              ? SharedDeviceResponse.fromMap(
+                  Map<String, dynamic>.from(packet.payload as Map),
+                )
               : SharedDeviceResponse.success(data: packet.payload));
       completer.complete(status);
     }
   }
 
   /// Handles a discovery response and caches the devices.
-  void _handleDiscoveryResponse(NetworkPacket packet, String senderIp, int senderPort) {
+  void _handleDiscoveryResponse(
+    NetworkPacket packet,
+    String senderIp,
+    int senderPort,
+  ) {
     if (packet.payload is Map) {
       final map = Map<String, dynamic>.from(packet.payload as Map);
       if (map['devices'] is List) {
         for (final item in (map['devices'] as List)) {
           if (item is Map) {
             try {
-              final device = SharedDevice.fromMap(Map<String, dynamic>.from(item));
-              final resolvedDevice = device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
+              final device = SharedDevice.fromMap(
+                Map<String, dynamic>.from(item),
+              );
+              final resolvedDevice =
+                  device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
                   ? device.copyWith(deviceIp: senderIp)
                   : device;
               _knownDevices[resolvedDevice.deviceId] = resolvedDevice;
@@ -134,7 +144,8 @@ class SharedDeviceNetworkClient {
       } else {
         try {
           final device = SharedDevice.fromMap(map);
-          final resolvedDevice = device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
+          final resolvedDevice =
+              device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
               ? device.copyWith(deviceIp: senderIp)
               : device;
           _knownDevices[resolvedDevice.deviceId] = resolvedDevice;
@@ -185,13 +196,18 @@ class SharedDeviceNetworkClient {
                   senderPort: datagram.port,
                 );
 
-                if (packet != null && packet.type == PacketType.discoveryResponse) {
+                if (packet != null &&
+                    packet.type == PacketType.discoveryResponse) {
                   if (packet.payload is Map) {
-                    final map = Map<String, dynamic>.from(packet.payload as Map);
+                    final map = Map<String, dynamic>.from(
+                      packet.payload as Map,
+                    );
                     final List<Map<String, dynamic>> rawDevices = [];
                     if (map['devices'] is List) {
                       for (final d in (map['devices'] as List)) {
-                        if (d is Map) rawDevices.add(Map<String, dynamic>.from(d));
+                        if (d is Map) {
+                          rawDevices.add(Map<String, dynamic>.from(d));
+                        }
                       }
                     } else if (map.containsKey('deviceId')) {
                       rawDevices.add(map);
@@ -200,7 +216,8 @@ class SharedDeviceNetworkClient {
                     for (final raw in rawDevices) {
                       try {
                         final dev = SharedDevice.fromMap(raw);
-                        final resolved = dev.deviceIp.isEmpty || dev.deviceIp == '0.0.0.0'
+                        final resolved =
+                            dev.deviceIp.isEmpty || dev.deviceIp == '0.0.0.0'
                             ? dev.copyWith(deviceIp: datagram.address.address)
                             : dev;
 
@@ -236,7 +253,11 @@ class SharedDeviceNetworkClient {
 
           // Also send directly on loopback for local tests/instances
           try {
-            discSocket!.send(bytes, InternetAddress.loopbackIPv4, targetDiscoveryPort);
+            discSocket!.send(
+              bytes,
+              InternetAddress.loopbackIPv4,
+              targetDiscoveryPort,
+            );
           } catch (_) {}
 
           // Wait for timeout, then close
@@ -268,7 +289,10 @@ class SharedDeviceNetworkClient {
     int? discoveryPort,
   }) async {
     final devices = <SharedDevice>[];
-    await for (final device in discoverDevices(timeout: timeout, discoveryPort: discoveryPort)) {
+    await for (final device in discoverDevices(
+      timeout: timeout,
+      discoveryPort: discoveryPort,
+    )) {
       devices.add(device);
     }
     return devices;
@@ -305,7 +329,9 @@ class SharedDeviceNetworkClient {
       final discoveredList = await discoverDevicesOnce(
         timeout: const Duration(milliseconds: 1500),
       );
-      final found = discoveredList.where((d) => d.deviceId == deviceId).firstOrNull;
+      final found = discoveredList
+          .where((d) => d.deviceId == deviceId)
+          .firstOrNull;
       if (found != null) {
         targetIp = found.deviceIp;
         targetPort = found.devicePort;
@@ -338,16 +364,15 @@ class SharedDeviceNetworkClient {
     SharedDevice? targetDevice,
     String? ip,
     int? port,
-  }) =>
-      sendToDevice(
-        deviceId,
-        message,
-        pairKey: pairKey,
-        timeout: timeout,
-        targetDevice: targetDevice,
-        ip: ip,
-        port: port,
-      );
+  }) => sendToDevice(
+    deviceId,
+    message,
+    pairKey: pairKey,
+    timeout: timeout,
+    targetDevice: targetDevice,
+    ip: ip,
+    port: port,
+  );
 
   /// Sends a message directly to an IP and Port with an incremental message ID and waits for ACK.
   Future<SharedDeviceResponse> sendToAddress(
@@ -382,7 +407,8 @@ class SharedDeviceNetworkClient {
       if (pending != null && !pending.isCompleted) {
         pending.complete(
           SharedDeviceResponse.timeout(
-            message: 'Timed out waiting for ACK from $ip:$port for message ID #$messageId',
+            message:
+                'Timed out waiting for ACK from $ip:$port for message ID #$messageId',
             timeout: actualTimeout,
           ),
         );

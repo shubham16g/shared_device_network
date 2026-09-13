@@ -83,19 +83,15 @@ class SharedDeviceNetworkServer {
   final StreamController<NetworkPacket> _messageStreamController =
       StreamController<NetworkPacket>.broadcast();
 
-
   /// Creates a new [SharedDeviceNetworkServer] instance.
   ///
   /// Optionally accepts an initial [onMessageReceived] callback, or register
   /// it dynamically using [onMessageReceived(callback)].
-  SharedDeviceNetworkServer({
-    OnMessageReceivedCallback? onMessageReceived,
-  }) {
+  SharedDeviceNetworkServer({OnMessageReceivedCallback? onMessageReceived}) {
     if (onMessageReceived != null) {
       _onMessageReceived = onMessageReceived;
     }
   }
-
 
   // ---------------------------------------------------------------------------
   // Instance Properties & Getters
@@ -128,8 +124,12 @@ class SharedDeviceNetworkServer {
     Map<String, dynamic>? metadata,
   }) async {
     final trimmedId = deviceId.trim();
-    if (trimmedId.isEmpty) throw ArgumentError('Device ID cannot be empty');
-    if (_devices.containsKey(trimmedId)) throw ArgumentError('Device ID $trimmedId already exists');
+    if (trimmedId.isEmpty) {
+      throw ArgumentError('Device ID cannot be empty');
+    }
+    if (_devices.containsKey(trimmedId)) {
+      throw ArgumentError('Device ID $trimmedId already exists');
+    }
 
     _devices[trimmedId] = SharedDeviceRecord(
       deviceId: trimmedId,
@@ -398,10 +398,7 @@ class SharedDeviceNetworkServer {
     final handler = _onMessageReceived;
     if (handler != null) {
       try {
-        final result = await handler(
-          matchedDevice.deviceId,
-          packet.payload,
-        );
+        final result = await handler(matchedDevice.deviceId, packet.payload);
 
         if (result is SharedDeviceResponse) {
           response = result;

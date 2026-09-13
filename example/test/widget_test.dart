@@ -13,11 +13,7 @@ void main() {
   });
 
   testWidgets('BgServiceScreen smoke test', (WidgetTester tester) async {
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: BgServiceScreen(),
-      ),
-    );
+    await tester.pumpWidget(const MaterialApp(home: BgServiceScreen()));
 
     expect(find.text('Background Service Server'), findsOneWidget);
     expect(find.textContaining('BG Host'), findsOneWidget);

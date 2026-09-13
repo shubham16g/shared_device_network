@@ -16,7 +16,8 @@ class NetworkUtils {
       for (final interface in interfaces) {
         for (final address in interface.addresses) {
           if (address.type == InternetAddressType.IPv4) {
-            if (!includeLoopback && (address.isLoopback || address.address.startsWith('127.'))) {
+            if (!includeLoopback &&
+                (address.isLoopback || address.address.startsWith('127.'))) {
               continue;
             }
             addresses.add(address);
@@ -33,7 +34,9 @@ class NetworkUtils {
   }
 
   /// Retrieves the primary local IPv4 address string (e.g. `192.168.1.100`), or `127.0.0.1` if none found.
-  static Future<String> getPrimaryLocalIPv4({String fallback = '127.0.0.1'}) async {
+  static Future<String> getPrimaryLocalIPv4({
+    String fallback = '127.0.0.1',
+  }) async {
     final addresses = await getLocalIPv4Addresses(includeLoopback: false);
     if (addresses.isNotEmpty) {
       return addresses.first.address;

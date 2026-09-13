@@ -63,13 +63,17 @@ class SharedDeviceRecord {
   /// Creates from JSON string or Map.
   factory SharedDeviceRecord.fromJson(dynamic source) {
     if (source is String) {
-      return SharedDeviceRecord.fromMap(json.decode(source) as Map<String, dynamic>);
+      return SharedDeviceRecord.fromMap(
+        json.decode(source) as Map<String, dynamic>,
+      );
     } else if (source is Map<String, dynamic>) {
       return SharedDeviceRecord.fromMap(source);
     } else if (source is Map) {
       return SharedDeviceRecord.fromMap(Map<String, dynamic>.from(source));
     }
-    throw ArgumentError('Invalid source type for SharedDeviceRecord.fromJson: ${source.runtimeType}');
+    throw ArgumentError(
+      'Invalid source type for SharedDeviceRecord.fromJson: ${source.runtimeType}',
+    );
   }
 
   /// Copies with modifications.
