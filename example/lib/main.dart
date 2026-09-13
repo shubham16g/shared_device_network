@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_device_network/shared_device_network.dart';
+import 'package:shared_device_network_example/bg_service_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -48,7 +49,6 @@ class _HomeScreenState extends State<HomeScreen>
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
 
-    
     server.onMessageReceived((deviceId, message) async {
       _log('📥 Host received for "$deviceId": $message');
       return SharedDeviceResponse.success(
@@ -303,6 +303,16 @@ class _HomeScreenState extends State<HomeScreen>
     return Scaffold(
       appBar: AppBar(
         title: const Text('Shared Device Network'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (context) => BgServiceScreen()),
+              );
+            },
+            child: Text('Run as Background Service'),
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           tabs: [
