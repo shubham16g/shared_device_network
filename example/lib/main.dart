@@ -10,8 +10,8 @@ void main() async {
   await SharedDeviceNetworkServer.init(
     port: 8888,
     discoveryPort: 8889,
-    notificationTitle: 'POS Server Active',
-    notificationText: 'Sharing connected peripherals over LAN...',
+    notificationTitle: '{devices} ({deviceCount} Active)',
+    notificationText: 'Sharing on port {port}',
   );
 
   runApp(const SharedDeviceApp());

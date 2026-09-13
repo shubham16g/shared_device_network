@@ -28,8 +28,11 @@ class SharedDeviceNetworkServer {
 
   static int _staticPort = 8888;
   static int _staticDiscoveryPort = 8889;
-  static String _staticNotificationTitle = 'Shared Device Server Active';
-  static String _staticNotificationText = 'Sharing connected devices on network...';
+  static String _staticNotificationTitle = '{devices}';
+  static String _staticNotificationText = '';
+  static String _staticNotificationChannelName = 'Background Service';
+  static String _staticNotificationChannelDescription = '';
+  static int _staticNotificationId = 888;
   static bool _staticEnableForegroundService = true;
 
   static FutureOr<dynamic> Function(String deviceId, dynamic message)? _globalDataCallback;
@@ -45,18 +48,26 @@ class SharedDeviceNetworkServer {
   /// Note: This method does NOT start the UDP server or display the notification.
   /// The server sockets and foreground notification will only start when the first device
   /// is added via [addDevice].
+  ///
+  /// [notificationTitle] and [notificationText] support dynamic placeholders:
+  /// - `{devices}`: Comma-separated list of active devices (with max limit and `...` if exceeded)
+  /// - `{deviceCount}`: Number of active devices
+  /// - `{port}`: Main UDP server port
   static Future<void> init({
     int port = 8888,
     int discoveryPort = 8889,
-    String notificationChannelName = 'Shared Device Network Service',
-    String notificationChannelDescription = 'Keeps the Shared Device Network active in background',
+    String notificationChannelName = 'Background Service',
+    String notificationChannelDescription = '',
     int notificationId = 888,
-    String notificationTitle = 'Shared Device Server Active',
-    String notificationText = 'Sharing connected devices on network...',
+    String notificationTitle = '{devices}',
+    String notificationText = '',
     bool enableForegroundService = true,
   }) async {
     _staticPort = port;
     _staticDiscoveryPort = discoveryPort;
+    _staticNotificationChannelName = notificationChannelName;
+    _staticNotificationChannelDescription = notificationChannelDescription;
+    _staticNotificationId = notificationId;
     _staticNotificationTitle = notificationTitle;
     _staticNotificationText = notificationText;
     _staticEnableForegroundService = enableForegroundService;
@@ -69,6 +80,8 @@ class SharedDeviceNetworkServer {
         notificationChannelName: notificationChannelName,
         notificationChannelDescription: notificationChannelDescription,
         notificationId: notificationId,
+        notificationTitle: notificationTitle,
+        notificationText: notificationText,
       );
 
       // Never auto-add devices or auto-start server/notification on startup
@@ -78,6 +91,22 @@ class SharedDeviceNetworkServer {
       SharedDeviceForegroundService.addMessageCallback(_handleStaticBackgroundMessage);
       SharedDeviceForegroundService.addLogCallback(_handleStaticBackgroundLog);
       SharedDeviceForegroundService.addDeviceCallback(_handleStaticDevicesUpdated);
+    }
+  }
+
+  /// Dynamically updates the notification title and/or text templates while the server is running.
+  static Future<void> updateNotification({
+    String? notificationTitle,
+    String? notificationText,
+  }) async {
+    if (notificationTitle != null) _staticNotificationTitle = notificationTitle;
+    if (notificationText != null) _staticNotificationText = notificationText;
+
+    if (_staticEnableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
+      await SharedDeviceForegroundService.updateNotification(
+        notificationTitle: _staticNotificationTitle,
+        notificationText: _staticNotificationText,
+      );
     }
   }
 
@@ -122,6 +151,8 @@ class SharedDeviceNetworkServer {
         metadata: metadata,
         port: _staticPort,
         discoveryPort: _staticDiscoveryPort,
+        notificationTitle: _staticNotificationTitle,
+        notificationText: _staticNotificationText,
       );
     }
 
@@ -351,8 +382,8 @@ class SharedDeviceUdpServer {
     this.autoStartOnFirstDevice = true,
     this.autoStopOnEmptyDevices = true,
     this.enableForegroundService = false,
-    this.notificationTitle = 'Shared Device Server Active',
-    this.notificationText = 'Sharing connected devices on network...',
+    this.notificationTitle = '{devices}',
+    this.notificationText = '',
   }) {
     if (enableForegroundService && (Platform.isAndroid || Platform.isIOS)) {
       SharedDeviceForegroundService.addMessageCallback(_handleBackgroundDataCallback);

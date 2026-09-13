@@ -56,14 +56,15 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // 1. Initialize server configuration (does not start server or show notification yet)
+  // Supports dynamic placeholders: {devices}, {deviceCount}, {port}
   await SharedDeviceNetworkServer.init(
     port: 8888,
     discoveryPort: 8889,
-    notificationChannelName: 'Shared Device Service',
-    notificationChannelDescription: 'Shares peripherals over LAN',
+    notificationChannelName: 'Background Service',
+    notificationChannelDescription: 'Active peripheral sharing service',
     notificationId: 888,
-    notificationTitle: 'POS Device Server Active',
-    notificationText: 'Sharing connected peripherals on network...',
+    notificationTitle: '{devices} ({deviceCount} Active)',
+    notificationText: 'Sharing on port {port}...',
   );
 
   // 2. Register incoming data/command handler

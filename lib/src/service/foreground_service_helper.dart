@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/shared_device_record.dart';
 import '../models/shared_device_response.dart';
 import '../server/shared_device_network_server.dart';
+import '../utils/notification_template.dart';
 
 @pragma('vm:entry-point')
 void onStart(ServiceInstance service) async {
@@ -20,6 +21,8 @@ void onStart(ServiceInstance service) async {
   final port = prefs.getInt('server_port') ?? 8888;
   final discoveryPort = prefs.getInt('server_discoveryPort') ?? 8889;
   final devicesJson = prefs.getString('server_devices');
+  String titleTemplate = prefs.getString('server_notificationTitle') ?? '{devices}';
+  String textTemplate = prefs.getString('server_notificationText') ?? '';
 
   int receivedCount = 0;
 
@@ -46,6 +49,8 @@ void onStart(ServiceInstance service) async {
     autoStartOnFirstDevice: false, // Explicitly managed in background isolate
     autoStopOnEmptyDevices: false, // Explicitly managed in background isolate
     enableForegroundService: false, // Already inside the background isolate
+    notificationTitle: titleTemplate,
+    notificationText: textTemplate,
     onDataReceived: (deviceId, message) async {
       receivedCount++;
 
@@ -65,10 +70,15 @@ void onStart(ServiceInstance service) async {
       // Update Android notification text so activity is visible even when app is killed
       try {
         if (service is AndroidServiceInstance) {
-          final count = server.deviceCount;
-          service.setForegroundNotificationInfo(
-            title: 'Shared Device Server Active',
-            content: 'Sharing $count device(s) • Last event for: $deviceId',
+          _updateNotificationText(
+            server,
+            service,
+            titleTemplate: titleTemplate,
+            textTemplate: textTemplate,
+            port: port,
+            discoveryPort: discoveryPort,
+            lastEventDevice: deviceId,
+            lastMessage: message?.toString() ?? '',
           );
         }
       } catch (_) {}
@@ -123,7 +133,14 @@ void onStart(ServiceInstance service) async {
   }
 
   // Update notification with initial state
-  _updateNotificationText(server, service, port: port);
+  _updateNotificationText(
+    server,
+    service,
+    titleTemplate: titleTemplate,
+    textTemplate: textTemplate,
+    port: port,
+    discoveryPort: discoveryPort,
+  );
 
   // 4. Register event handlers from UI isolate
   service.on('stopService').listen((event) async {
@@ -161,7 +178,14 @@ void onStart(ServiceInstance service) async {
         }
       }
       _persistCurrentDevices(server, prefs);
-      _updateNotificationText(server, service, port: port);
+      _updateNotificationText(
+        server,
+        service,
+        titleTemplate: titleTemplate,
+        textTemplate: textTemplate,
+        port: port,
+        discoveryPort: discoveryPort,
+      );
       await logEvent('Added shared device: $devName ($devId)');
       service.invoke('devicesUpdated', {
         'devices': server.devices.map((d) => d.toMap()).toList(),
@@ -180,7 +204,14 @@ void onStart(ServiceInstance service) async {
         await server.stop();
         service.stopSelf();
       } else {
-        _updateNotificationText(server, service, port: port);
+        _updateNotificationText(
+          server,
+          service,
+          titleTemplate: titleTemplate,
+          textTemplate: textTemplate,
+          port: port,
+          discoveryPort: discoveryPort,
+        );
         await logEvent('Removed device: $devId. Remaining: ${server.deviceCount}');
       }
       service.invoke('devicesUpdated', {
@@ -198,35 +229,74 @@ void onStart(ServiceInstance service) async {
 
   service.on('updateNotification').listen((map) {
     if (map == null) return;
-    if (service is AndroidServiceInstance) {
-      final title = map['notificationTitle']?.toString();
-      final text = map['notificationText']?.toString();
-      if (title != null && text != null) {
-        service.setForegroundNotificationInfo(title: title, content: text);
-      }
+    final newTitle = map['notificationTitle']?.toString();
+    final newText = map['notificationText']?.toString();
+    if (newTitle != null) {
+      titleTemplate = newTitle;
+      prefs.setString('server_notificationTitle', titleTemplate);
     }
+    if (newText != null) {
+      textTemplate = newText;
+      prefs.setString('server_notificationText', textTemplate);
+    }
+    _updateNotificationText(
+      server,
+      service,
+      titleTemplate: titleTemplate,
+      textTemplate: textTemplate,
+      port: port,
+      discoveryPort: discoveryPort,
+    );
   });
 }
 
 void _updateNotificationText(
   SharedDeviceUdpServer server,
   ServiceInstance service, {
+  String? titleTemplate,
+  String? textTemplate,
   int port = 8888,
+  int discoveryPort = 8889,
+  String lastEventDevice = '',
+  String lastMessage = '',
+  int maxDevices = 3,
 }) {
   if (service is AndroidServiceInstance) {
     final count = server.deviceCount;
     if (count == 0) {
       return;
     }
-    final dev = server.devices.first;
-    final title = count == 1 ? '${dev.deviceName} Active' : 'Shared Device Server ($count Active)';
-    final text = 'Sharing $count connected peripheral${count == 1 ? "" : "s"} on network';
+    final deviceNames = server.devices.map((d) => d.deviceName).toList();
+
+    final title = NotificationTemplate.format(
+      titleTemplate ?? '{devices}',
+      count: count,
+      port: port,
+      discoveryPort: discoveryPort,
+      lastEventDevice: lastEventDevice,
+      lastMessage: lastMessage,
+      deviceNames: deviceNames,
+      maxDevices: maxDevices,
+    );
+
+    final text = NotificationTemplate.format(
+      textTemplate ?? '',
+      count: count,
+      port: port,
+      discoveryPort: discoveryPort,
+      lastEventDevice: lastEventDevice,
+      lastMessage: lastMessage,
+      deviceNames: deviceNames,
+      maxDevices: maxDevices,
+    );
+
     service.setForegroundNotificationInfo(
-      title: title,
+      title: title.isNotEmpty ? title : (deviceNames.isNotEmpty ? deviceNames.first : ''),
       content: text,
     );
   }
 }
+
 
 void _persistCurrentDevices(SharedDeviceUdpServer server, SharedPreferences prefs) {
   final list = server.devices.map((d) => d.toMap()).toList();
@@ -264,15 +334,33 @@ class SharedDeviceForegroundService {
 
   /// Initializes the foreground service configuration and event listeners.
   static Future<void> init({
-    String notificationChannelName = 'Shared Device Network Service',
-    String notificationChannelDescription = 'Keeps the Shared Device Network active in background',
+    String notificationChannelName = 'Background Service',
+    String notificationChannelDescription = '',
     int notificationId = 888,
+    String notificationTitle = '{devices}',
+    String notificationText = '',
   }) async {
     if (!Platform.isAndroid && !Platform.isIOS) {
       return;
     }
 
-    if (_isInitialized) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('server_notificationTitle', notificationTitle);
+    await prefs.setString('server_notificationText', notificationText);
+    await prefs.setString('server_notificationChannelName', notificationChannelName);
+    await prefs.setString('server_notificationChannelDescription', notificationChannelDescription);
+    await prefs.setInt('server_notificationId', notificationId);
+
+    if (_isInitialized) {
+      await updateNotification(
+        notificationTitle: notificationTitle,
+        notificationText: notificationText,
+      );
+      return;
+    }
+
+    final initialTitle = NotificationTemplate.format(notificationTitle, count: 0);
+    final initialContent = NotificationTemplate.format(notificationText, count: 0);
 
     await _service.configure(
       androidConfiguration: AndroidConfiguration(
@@ -280,8 +368,8 @@ class SharedDeviceForegroundService {
         autoStart: false,
         autoStartOnBoot: false,
         isForegroundMode: true,
-        initialNotificationTitle: notificationChannelName,
-        initialNotificationContent: notificationChannelDescription,
+        initialNotificationTitle: initialTitle.isNotEmpty ? initialTitle : notificationChannelName,
+        initialNotificationContent: initialContent,
         foregroundServiceNotificationId: notificationId,
         foregroundServiceTypes: [
           AndroidForegroundType.connectedDevice,
@@ -337,10 +425,15 @@ class SharedDeviceForegroundService {
     Map<String, dynamic>? metadata,
     int port = 8888,
     int discoveryPort = 8889,
+    String? notificationTitle,
+    String? notificationText,
   }) async {
     if (!Platform.isAndroid && !Platform.isIOS) return true;
 
-    await init();
+    await init(
+      notificationTitle: notificationTitle ?? '{devices}',
+      notificationText: notificationText ?? '',
+    );
 
     final newRecord = SharedDeviceRecord(
       deviceId: deviceId,
@@ -355,6 +448,12 @@ class SharedDeviceForegroundService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('server_port', port);
     await prefs.setInt('server_discoveryPort', discoveryPort);
+    if (notificationTitle != null) {
+      await prefs.setString('server_notificationTitle', notificationTitle);
+    }
+    if (notificationText != null) {
+      await prefs.setString('server_notificationText', notificationText);
+    }
 
     final currentDevices = await getStoredDevices();
     final existingIndex = currentDevices.indexWhere((d) => d.deviceId == deviceId);
@@ -419,18 +518,24 @@ class SharedDeviceForegroundService {
     int port = 8888,
     int discoveryPort = 8889,
     List<SharedDeviceRecord>? initialDevices,
-    String notificationTitle = 'Shared Device Server Active',
-    String notificationText = 'Sharing connected devices in background...',
+    String notificationTitle = '{devices}',
+    String notificationText = '',
   }) async {
     if (!Platform.isAndroid && !Platform.isIOS) {
       return true;
     }
 
-    await init();
+    await init(
+      notificationTitle: notificationTitle,
+      notificationText: notificationText,
+    );
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('server_port', port);
     await prefs.setInt('server_discoveryPort', discoveryPort);
+    await prefs.setString('server_notificationTitle', notificationTitle);
+    await prefs.setString('server_notificationText', notificationText);
+
     if (initialDevices != null) {
       final jsonList = json.encode(initialDevices.map((d) => d.toMap()).toList());
       await prefs.setString('server_devices', jsonList);
@@ -445,14 +550,21 @@ class SharedDeviceForegroundService {
 
   /// Starts the foreground service.
   static Future<bool> startService({
-    String notificationTitle = 'Shared Device Network Server Active',
-    String notificationText = 'Listening for incoming device connections...',
+    String notificationTitle = '{devices}',
+    String notificationText = '',
   }) async {
     if (!Platform.isAndroid && !Platform.isIOS) {
       return true;
     }
 
-    await init();
+    await init(
+      notificationTitle: notificationTitle,
+      notificationText: notificationText,
+    );
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('server_notificationTitle', notificationTitle);
+    await prefs.setString('server_notificationText', notificationText);
 
     if (await _service.isRunning()) {
       return true;
@@ -572,6 +684,10 @@ class SharedDeviceForegroundService {
     if (!Platform.isAndroid && !Platform.isIOS) {
       return true;
     }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('server_notificationTitle', notificationTitle);
+    await prefs.setString('server_notificationText', notificationText);
 
     _service.invoke('updateNotification', {
       'notificationTitle': notificationTitle,

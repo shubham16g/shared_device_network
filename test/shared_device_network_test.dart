@@ -229,6 +229,87 @@ void main() {
     });
   });
 
+  group('NotificationTemplate Tests', () {
+    test('Replaces {devices}, {count}, and {port} placeholders correctly', () {
+      final formatted = NotificationTemplate.format(
+        '{devices} ({count} Active) : {port}',
+        deviceNames: ['Thermal Printer'],
+        count: 1,
+        port: 8888,
+      );
+      expect(formatted, 'Thermal Printer (1 Active) : 8888');
+    });
+
+    test('Formats {devices} with multiple devices under maxLimit', () {
+      final formatted = NotificationTemplate.format(
+        'Devices: {devices}',
+        deviceNames: ['Printer', 'Scanner'],
+        count: 2,
+      );
+      expect(formatted, 'Devices: Printer, Scanner');
+    });
+
+    test('Formats {devices} with max limit and trailing ellipsis when exceeded', () {
+      final formatted = NotificationTemplate.format(
+        '{devices}',
+        deviceNames: ['Printer', 'Scanner', 'Cash Drawer', 'Card Terminal', 'Scale'],
+        maxDevices: 3,
+        count: 5,
+      );
+      expect(formatted, 'Printer, Scanner, Cash Drawer, ...');
+    });
+
+    test('Supports custom maxDevices limit for {devices}', () {
+      final formatted = NotificationTemplate.format(
+        '{devices}',
+        deviceNames: ['Printer', 'Scanner', 'Cash Drawer'],
+        maxDevices: 2,
+        count: 3,
+      );
+      expect(formatted, 'Printer, Scanner, ...');
+    });
+
+    test('NotificationTemplate.formatDevices utility formats correctly with ellipsis', () {
+      expect(
+        NotificationTemplate.formatDevices(['A', 'B', 'C', 'D'], maxLimit: 2),
+        'A, B, ...',
+      );
+      expect(
+        NotificationTemplate.formatDevices(['A', 'B']),
+        'A, B',
+      );
+      expect(
+        NotificationTemplate.formatDevices([]),
+        '',
+      );
+    });
+
+    test('Replaces last event placeholders', () {
+      final formatted = NotificationTemplate.format(
+        '{lastEventDevice} received {lastMessage}',
+        lastEventDevice: 'scanner-1',
+        lastMessage: 'BARCODE_123',
+      );
+      expect(formatted, 'scanner-1 received BARCODE_123');
+    });
+
+    test('Leaves static text unchanged without placeholders', () {
+      final formatted = NotificationTemplate.format(
+        'POS Device Server',
+        count: 1,
+      );
+      expect(formatted, 'POS Device Server');
+    });
+
+    test('Returns empty string when template is empty', () {
+      final formatted = NotificationTemplate.format(
+        '',
+        count: 1,
+      );
+      expect(formatted, '');
+    });
+  });
+
   group('UDP Server & Client Shared Devices Multi-Device Tests', () {
     late SharedDeviceUdpServer server;
     late SharedDeviceNetworkClient client;
@@ -482,6 +563,41 @@ void main() {
       expect(removed2, isTrue);
       expect(SharedDeviceNetworkServer.deviceCount, 0);
       expect(SharedDeviceNetworkServer.isRunning, isFalse);
+    });
+
+    test('Static API supports configurable notification title and text with placeholders', () async {
+      await SharedDeviceNetworkServer.init(
+        port: 9911,
+        discoveryPort: 9912,
+        notificationTitle: '{devices} ({deviceCount} Active)',
+        notificationText: 'Sharing on port {port}',
+        enableForegroundService: false,
+      );
+
+      final added = await SharedDeviceNetworkServer.addDevice(
+        'pos-printer-01',
+        'Kitchen Printer',
+      );
+      expect(added, isTrue);
+
+      final formattedTitle = NotificationTemplate.format(
+        '{devices} ({deviceCount} Active)',
+        deviceNames: SharedDeviceNetworkServer.devices.map((d) => d.deviceName).toList(),
+        count: SharedDeviceNetworkServer.deviceCount,
+      );
+      expect(formattedTitle, 'Kitchen Printer (1 Active)');
+
+      await SharedDeviceNetworkServer.updateNotification(
+        notificationTitle: 'Custom Server - {deviceCount}',
+      );
+
+      final updatedTitle = NotificationTemplate.format(
+        'Custom Server - {deviceCount}',
+        count: SharedDeviceNetworkServer.deviceCount,
+      );
+      expect(updatedTitle, 'Custom Server - 1');
+
+      await SharedDeviceNetworkServer.removeDevice('pos-printer-01');
     });
   });
 }
