@@ -83,11 +83,6 @@ class SharedDeviceNetworkServer {
   final StreamController<NetworkPacket> _messageStreamController =
       StreamController<NetworkPacket>.broadcast();
 
-  /// Global singleton reference created via [init], if needed.
-  static SharedDeviceNetworkServer? _instance;
-
-  /// Returns the most recently initialized static server instance, if any.
-  static SharedDeviceNetworkServer? get instance => _instance;
 
   /// Creates a new [SharedDeviceNetworkServer] instance.
   ///

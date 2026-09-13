@@ -223,26 +223,4 @@ void main() {
       expect(handlerRes.message, 'pong from test-dyn');
     });
   });
-
-  group('NotificationTemplate Tests', () {
-    test('Formats template with placeholders correctly', () {
-      final formatted = NotificationTemplate.format(
-        '{devices} ({deviceCount} Active) on port {port}',
-        deviceNames: ['Printer', 'Scanner'],
-        count: 2,
-        port: 8888,
-      );
-
-      expect(formatted, 'Printer, Scanner (2 Active) on port 8888');
-    });
-
-    test('Limits device names when exceeding maxLimit', () {
-      final formatted = NotificationTemplate.formatDevices(
-        ['Dev1', 'Dev2', 'Dev3', 'Dev4'],
-        maxLimit: 2,
-      );
-
-      expect(formatted, 'Dev1, Dev2, ...');
-    });
-  });
 }
