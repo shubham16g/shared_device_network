@@ -49,8 +49,6 @@ class _HomeScreenState extends State<HomeScreen>
     _tabController = TabController(length: 2, vsync: this);
 
     server = SharedDeviceNetworkServer(
-      port: 8888,
-      discoveryPort: 8889,
       onMessageReceived: (deviceId, message) async {
         _log('📥 Host received for "$deviceId": $message');
         return SharedDeviceResponse.success(
@@ -59,7 +57,7 @@ class _HomeScreenState extends State<HomeScreen>
         );
       },
     );
-    server.start();
+    server.start(port: 8888, discoveryPort: 8889);
 
     // 3. Initialize client for testing discovery and dispatch
     _client = SharedDeviceNetworkClient(

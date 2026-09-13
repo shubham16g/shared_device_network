@@ -21,8 +21,6 @@ void main() {
     test('Server lifecycle, device management, discovery, and message dispatch', () async {
       // 1. Initialize server using constructor
       server = SharedDeviceNetworkServer(
-        port: testPort,
-        discoveryPort: testDiscoveryPort,
         onMessageReceived: (deviceId, message) async {
           if (deviceId == 'printer-bt-01') {
             return SharedDeviceResponse.success(
@@ -40,8 +38,10 @@ void main() {
       );
 
       expect(server.isRunning, isFalse);
-      await server.start();
+      await server.start(port: testPort, discoveryPort: testDiscoveryPort);
       expect(server.isRunning, isTrue);
+      expect(server.port, testPort);
+      expect(server.discoveryPort, testDiscoveryPort);
       expect(server.deviceCount, 0);
 
       // 2. Add devices
@@ -130,13 +130,11 @@ void main() {
 
     test('Supports pair key security on devices', () async {
       server = SharedDeviceNetworkServer(
-        port: 18890,
-        discoveryPort: 18891,
         onMessageReceived: (deviceId, message) async {
           return SharedDeviceResponse.success(message: 'Authorized access');
         },
       );
-      await server.start();
+      await server.start(port: 18890, discoveryPort: 18891);
 
       await server.addDevice(
         'secure-device',
@@ -186,6 +184,22 @@ void main() {
       expect(status.isSuccess, isFalse);
       expect(status.statusCode, 408);
       expect(status.error, 'TIMEOUT');
+    });
+
+    test('start() respects default ports and discoverPort alias', () async {
+      final defaultServer = SharedDeviceNetworkServer(
+        onMessageReceived: (deviceId, message) => null,
+      );
+      expect(defaultServer.port, 8888);
+      expect(defaultServer.discoveryPort, 8889);
+
+      final customServer = SharedDeviceNetworkServer(
+        onMessageReceived: (deviceId, message) => null,
+      );
+      await customServer.start(port: 19888, discoverPort: 19889);
+      expect(customServer.port, 19888);
+      expect(customServer.discoveryPort, 19889);
+      await customServer.dispose();
     });
   });
 

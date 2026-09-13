@@ -23,8 +23,6 @@ typedef OnDataReceivedCallback = OnMessageReceivedCallback;
 /// ### Quick Start:
 /// ```dart
 /// final server = SharedDeviceNetworkServer(
-///   port: 8888,
-///   discoveryPort: 8889,
 ///   onMessageReceived: (deviceId, message) async {
 ///     print('Received command for device $deviceId: $message');
 ///
@@ -42,7 +40,7 @@ typedef OnDataReceivedCallback = OnMessageReceivedCallback;
 ///     return SharedDeviceResponse.deviceNotFound();
 ///   },
 /// );
-/// await server.start();
+/// await server.start(port: 8888, discoveryPort: 8889);
 ///
 /// await server.addDevice(
 ///   'printer-bt-01',
@@ -53,11 +51,14 @@ typedef OnDataReceivedCallback = OnMessageReceivedCallback;
 /// // await server.removeDevice('printer-bt-01');
 /// ```
 class SharedDeviceNetworkServer {
+  int _port = 8888;
+  int _discoveryPort = 8889;
+
   /// UDP data port for receiving messages and sending ACKs (default: 8888).
-  final int port;
+  int get port => _port;
 
   /// UDP discovery port for listening to client broadcast discovery (default: 8889).
-  final int discoveryPort;
+  int get discoveryPort => _discoveryPort;
 
   /// The active callback invoked when a message is received.
   final OnMessageReceivedCallback onMessageReceived;
@@ -82,8 +83,6 @@ class SharedDeviceNetworkServer {
   /// Creates a new [SharedDeviceNetworkServer] instance.
   SharedDeviceNetworkServer({
     required this.onMessageReceived,
-    this.port = 8888,
-    this.discoveryPort = 8889,
   });
 
 
@@ -148,14 +147,25 @@ class SharedDeviceNetworkServer {
   // ---------------------------------------------------------------------------
 
   /// Starts listening for UDP discovery and data messages.
-  Future<void> start() async {
+  ///
+  /// [port] is the UDP data port (default: 8888).
+  /// [discoveryPort] is the UDP discovery broadcast port (default: 8889).
+  /// Also accepts [discoverPort] as an alias.
+  Future<void> start({
+    int port = 8888,
+    int? discoveryPort,
+    int? discoverPort,
+  }) async {
     if (_isRunning) return;
+
+    _port = port;
+    _discoveryPort = discoveryPort ?? discoverPort ?? 8889;
 
     try {
       // 1. Bind main data socket
       _dataSocket = await RawDatagramSocket.bind(
         InternetAddress.anyIPv4,
-        port,
+        _port,
         reuseAddress: true,
         reusePort: Platform.isIOS || Platform.isMacOS,
       );
@@ -163,10 +173,10 @@ class SharedDeviceNetworkServer {
       _dataSocket!.listen(_handleDataSocketEvent);
 
       // 2. Bind discovery socket (if discoveryPort is different from data port)
-      if (discoveryPort != port) {
+      if (_discoveryPort != _port) {
         _discoverySocket = await RawDatagramSocket.bind(
           InternetAddress.anyIPv4,
-          discoveryPort,
+          _discoveryPort,
           reuseAddress: true,
           reusePort: Platform.isIOS || Platform.isMacOS,
         );

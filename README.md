@@ -65,8 +65,6 @@ void main() async {
 
   // 1. Instantiate the server with the message handler
   final server = SharedDeviceNetworkServer(
-    port: 8888,
-    discoveryPort: 8889,
     onMessageReceived: (deviceId, message) async {
       print('📥 Host received for "$deviceId": $message');
 
@@ -90,8 +88,11 @@ void main() async {
     },
   );
 
-  // 2. Start listening on UDP sockets
-  await server.start();
+  // 2. Start listening on UDP sockets (with optional custom ports)
+  await server.start(
+    port: 8888,
+    discoveryPort: 8889,
+  );
 
   // 3. Register shared peripherals
   await server.addDevice(
@@ -178,8 +179,10 @@ void main() async {
 
 | Method / Property | Description |
 | :--- | :--- |
-| `SharedDeviceNetworkServer({required onMessageReceived, port, discoveryPort})` | Creates a new server instance. |
-| `start()` | Binds the UDP data and discovery sockets and begins listening. |
+| `SharedDeviceNetworkServer({required onMessageReceived})` | Creates a new server instance. |
+| `start({port = 8888, discoveryPort = 8889, discoverPort})` | Binds the UDP data and discovery sockets and begins listening. |
+| `port` | Active UDP data port. |
+| `discoveryPort` | Active UDP discovery broadcast port. |
 | `stop()` | Closes UDP sockets and stops listening. |
 | `dispose()` | Stops the server, clears registered devices, and closes streams. |
 | `addDevice(id, name, {deviceDescription, pairKey, metadata})` | Registers a shared peripheral. Throws `ArgumentError` if ID is empty or duplicate. |
