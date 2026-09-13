@@ -304,13 +304,13 @@ class _HomeScreenState extends State<HomeScreen>
       appBar: AppBar(
         title: const Text('Shared Device Network'),
         actions: [
-          TextButton(
+          ElevatedButton(
             onPressed: () {
               Navigator.of(context).push(
                 MaterialPageRoute(builder: (context) => BgServiceScreen()),
               );
             },
-            child: Text('Run as Background Service'),
+            child: Text('In Background'),
           ),
         ],
         bottom: TabBar(

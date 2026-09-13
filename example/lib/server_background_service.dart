@@ -245,12 +245,17 @@ class ServerBackgroundServiceController {
         androidConfiguration: AndroidConfiguration(
           onStart: onStart,
           autoStart: false,
+          autoStartOnBoot: false,
           isForegroundMode: true,
           notificationChannelId: kNotificationChannelId,
           initialNotificationTitle: 'Shared Device Service',
           initialNotificationContent:
               'Shared Device background server is running',
           foregroundServiceNotificationId: kNotificationId,
+          foregroundServiceTypes: [
+            AndroidForegroundType.connectedDevice,
+            AndroidForegroundType.dataSync,
+          ],
         ),
         iosConfiguration: IosConfiguration(
           autoStart: false,

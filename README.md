@@ -174,6 +174,197 @@ void main() async {
 
 ---
 
+## 🔄 Running as a Background Service
+
+When using a mobile device or tablet as the host server (e.g. at a counter or POS terminal), you often want the server to continue listening for UDP discovery and processing peripheral commands even when the app is minimized, running in the background, or the screen is turned off.
+
+You can integrate `shared_device_network` with [`flutter_background_service`](https://pub.dev/packages/flutter_background_service) to run the server continuously in an Android Foreground Service.
+
+> **📱 Complete Working Example Included**:
+> A complete, production-ready example is available in the [`example/`](example) directory:
+> - [**`example/lib/server_background_service.dart`**](file:///e:/Projects/shared_device_network/example/lib/server_background_service.dart): Implements background isolate lifecycle, device persistence with `shared_preferences`, and bidirectional event communication between UI and background service.
+> - [**`example/lib/bg_service_screen.dart`**](file:///e:/Projects/shared_device_network/example/lib/bg_service_screen.dart): Interactive UI with server controls, hosted device manager, real-time packet logs, and an internal test client.
+> - [**`example/lib/main.dart`**](file:///e:/Projects/shared_device_network/example/lib/main.dart): Demonstrates host & client tabs with one-tap access to background service mode via the **"In Background"** button.
+
+### 1. Add Dependencies
+
+Add the background service and permission handler to your app's `pubspec.yaml`:
+
+```yaml
+dependencies:
+  shared_device_network: ^0.0.1
+  flutter_background_service: ^5.1.0
+  permission_handler: ^11.3.1
+```
+
+### 2. Android Manifest Configuration
+
+In `android/app/src/main/AndroidManifest.xml`, declare the required permissions and foreground service:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Network & WakeLock permissions -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Foreground service permissions (Android 14+ requires specific types) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application ...>
+        <!-- Declare BackgroundService with connectedDevice & dataSync types -->
+        <service
+            android:name="id.flutter.flutter_background_service.BackgroundService"
+            android:foregroundServiceType="connectedDevice|dataSync"
+            android:stopWithTask="false"
+            android:enabled="true"
+            android:exported="true" />
+    </application>
+</manifest>
+```
+
+### 3. Create Notification Channel (Android 8.0+ / 14+)
+
+In `android/app/src/main/kotlin/.../MainActivity.kt`, create the notification channel on activity startup:
+
+```kotlin
+package com.example.your_app
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
+import android.os.Bundle
+import io.flutter.embedding.android.FlutterActivity
+
+class MainActivity : FlutterActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        createNotificationChannels()
+    }
+
+    private fun createNotificationChannels() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                "shared_device_bg_service_channel",
+                "Shared Device Background Service",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shared Device Network background server active notification"
+                setShowBadge(false)
+            }
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager?.createNotificationChannel(channel)
+        }
+    }
+}
+```
+
+### 4. Background Service Implementation
+
+Configure and start the `SharedDeviceNetworkServer` inside your background isolate:
+
+```dart
+import 'dart:ui';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:shared_device_network/shared_device_network.dart';
+
+// 1. Entry point for the background isolate
+@pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
+  DartPluginRegistrant.ensureInitialized();
+  WidgetsFlutterBinding.ensureInitialized();
+
+  final server = SharedDeviceNetworkServer();
+
+  // Register peripheral message handler
+  server.onMessageReceived((deviceId, message) async {
+    // Notify UI isolate via service pipe
+    service.invoke('messageReceived', {
+      'deviceId': deviceId,
+      'message': message,
+      'time': DateTime.now().toIso8601String(),
+    });
+
+    // Update foreground notification status
+    if (service is AndroidServiceInstance) {
+      service.setForegroundNotificationInfo(
+        title: 'Shared Device Background Server',
+        content: 'Processed command for "$deviceId"',
+      );
+    }
+
+    return SharedDeviceResponse.success(
+      message: 'Processed by Background Service for $deviceId',
+      data: {'echo': message},
+    );
+  });
+
+  // Start server on dedicated background ports
+  await server.start(port: 9888, discoveryPort: 9889);
+
+  // Register shared peripherals
+  await server.addDevice('printer-bt-01', 'Counter Thermal Printer');
+
+  // Handle stop signal from UI
+  service.on('stopService').listen((_) async {
+    await server.stop();
+    service.stopSelf();
+  });
+}
+
+@pragma('vm:entry-point')
+Future<bool> onIosBackground(ServiceInstance service) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  DartPluginRegistrant.ensureInitialized();
+  return true;
+}
+
+// 2. Configure service from UI isolate
+Future<void> initializeBackgroundService() async {
+  final service = FlutterBackgroundService();
+
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart,
+      autoStart: false,
+      autoStartOnBoot: false,
+      isForegroundMode: true,
+      notificationChannelId: 'shared_device_bg_service_channel',
+      initialNotificationTitle: 'Shared Device Service',
+      initialNotificationContent: 'Shared Device background server is running',
+      foregroundServiceNotificationId: 988,
+      foregroundServiceTypes: [
+        AndroidForegroundType.connectedDevice,
+        AndroidForegroundType.dataSync,
+      ],
+    ),
+    iosConfiguration: IosConfiguration(
+      autoStart: false,
+      onForeground: onStart,
+      onBackground: onIosBackground,
+    ),
+  );
+}
+
+// 3. Start or stop the service
+Future<void> startServerService() async {
+  await initializeBackgroundService();
+  await FlutterBackgroundService().startService();
+}
+
+void stopServerService() {
+  FlutterBackgroundService().invoke('stopService');
+}
+```
+
+---
+
 ## 📋 API Overview
 
 ### `SharedDeviceNetworkServer`
@@ -208,20 +399,27 @@ void main() async {
 
 ---
 
-## 🧪 Testing
+## 🧪 Testing & Example App
 
-Run unit and integration tests:
+Run the test suite:
 
 ```bash
 flutter test
 ```
 
-To run the interactive demo app:
+### 📱 Running the Example Project
+
+The repository includes a comprehensive Flutter example application under [`example/`](example):
 
 ```bash
 cd example
 flutter run
 ```
+
+The example app includes:
+- **Host Server Mode**: Create virtual peripherals, adjust UDP ports, inspect incoming packets, and toggle discovery.
+- **Client Discovery Mode**: Auto-discover servers on the local WiFi network, list peripherals, and dispatch test commands with status response inspection.
+- **Background Service Mode**: Tap **"In Background"** in the top bar to launch the dedicated background service controller, allowing the host server to run in an Android foreground service with persistent notifications and background isolate execution.
 
 ---
 
