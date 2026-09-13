@@ -24,6 +24,7 @@ class _BgServiceScreenState extends State<BgServiceScreen>
   List<SharedDeviceRecord> _hostedDevices = [];
   List<SharedDevice> _discoveredDevices = [];
   bool _isDiscovering = false;
+  final Map<String, String> _devicePairKeys = {};
 
   final List<String> _logs = [];
 
@@ -429,15 +430,105 @@ class _BgServiceScreenState extends State<BgServiceScreen>
     }
   }
 
+  void _showSetPairKeyDialog(SharedDevice dev) {
+    final currentKey = _devicePairKeys[dev.deviceId] ?? '';
+    final keyController = TextEditingController(text: currentKey);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.key, color: Colors.amber),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Pair Key: ${dev.deviceName}',
+                style: const TextStyle(fontSize: 17),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Set the authorization key for "${dev.deviceId}". If this device is protected with a pair key on the server, requests without matching key will return 401 Unauthorized.',
+              style: const TextStyle(fontSize: 12.5, color: Colors.black87),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: keyController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Pair Key',
+                hintText: 'Enter pair key...',
+                border: OutlineInputBorder(),
+                isDense: true,
+                prefixIcon: Icon(Icons.password, size: 20),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          if (currentKey.isNotEmpty)
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  _devicePairKeys.remove(dev.deviceId);
+                });
+                Navigator.pop(ctx);
+                _log('🔑 Cleared pair key for "${dev.deviceId}"');
+              },
+              child: const Text('Clear', style: TextStyle(color: Colors.red)),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final key = keyController.text.trim();
+              setState(() {
+                if (key.isNotEmpty) {
+                  _devicePairKeys[dev.deviceId] = key;
+                } else {
+                  _devicePairKeys.remove(dev.deviceId);
+                }
+              });
+              Navigator.pop(ctx);
+              if (key.isNotEmpty) {
+                _log('🔑 Pair key saved for "${dev.deviceId}": "$key"');
+              } else {
+                _log('🔑 Cleared pair key for "${dev.deviceId}"');
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _sendMessage(SharedDevice dev) async {
     if (_client == null) return;
-    _log('📤 Client sending test command to "${dev.deviceName}" (${dev.deviceId})...');
-    final status = await _client!.sendToDevice(dev.deviceId, {
-      'action': 'PRINT_BG_JOB',
-      'item': 'Espresso Single x1',
-      'total': 4.25,
-      'source': 'BackgroundServiceTester',
-    }, targetDevice: dev);
+    final pairKey = _devicePairKeys[dev.deviceId];
+    _log(
+      '📤 Client sending test command to "${dev.deviceName}" (${dev.deviceId})'
+      '${pairKey != null && pairKey.isNotEmpty ? " [PairKey: $pairKey]" : ""}...',
+    );
+    final status = await _client!.sendToDevice(
+      dev.deviceId,
+      {
+        'action': 'PRINT_BG_JOB',
+        'item': 'Espresso Single x1',
+        'total': 4.25,
+        'source': 'BackgroundServiceTester',
+      },
+      targetDevice: dev,
+      pairKey: pairKey != null && pairKey.isNotEmpty ? pairKey : null,
+    );
 
     if (status.isSuccess) {
       _log('✅ ACK from ${dev.deviceId}: ${status.message}');
@@ -811,24 +902,118 @@ class _BgServiceScreenState extends State<BgServiceScreen>
           )
         else
           ..._discoveredDevices.map(
-            (dev) => Card(
-              margin: const EdgeInsets.only(bottom: 8),
-              child: ListTile(
-                leading: const CircleAvatar(child: Icon(Icons.devices)),
-                title: Text(
-                  dev.deviceName,
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+            (dev) {
+              final pairKey = _devicePairKeys[dev.deviceId];
+              final hasKey = pairKey != null && pairKey.isNotEmpty;
+
+              return Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Top Row: Device Avatar & Info
+                      Row(
+                        children: [
+                          CircleAvatar(
+                            backgroundColor: hasKey
+                                ? Colors.amber.shade100
+                                : Theme.of(context).colorScheme.primaryContainer,
+                            child: Icon(
+                              hasKey ? Icons.lock : Icons.devices,
+                              color: hasKey
+                                  ? Colors.amber.shade900
+                                  : Theme.of(
+                                      context,
+                                    ).colorScheme.onPrimaryContainer,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  dev.deviceName,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  '${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey.shade700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      const Divider(height: 1),
+                      const SizedBox(height: 8),
+                      // Below Row: Pair Key button & Send Test button
+                      Row(
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: () => _showSetPairKeyDialog(dev),
+                            icon: Icon(
+                              hasKey ? Icons.key : Icons.key_outlined,
+                              size: 15,
+                              color: hasKey
+                                  ? Colors.amber.shade900
+                                  : Colors.grey.shade700,
+                            ),
+                            label: Text(
+                              hasKey ? 'Key: $pairKey' : 'Set Pair Key',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: hasKey
+                                    ? Colors.amber.shade900
+                                    : Colors.grey.shade800,
+                                fontWeight: hasKey
+                                    ? FontWeight.bold
+                                    : FontWeight.normal,
+                              ),
+                            ),
+                            style: OutlinedButton.styleFrom(
+                              backgroundColor: hasKey
+                                  ? Colors.amber.shade50
+                                  : null,
+                              side: BorderSide(
+                                color: hasKey
+                                    ? Colors.amber.shade400
+                                    : Colors.grey.shade400,
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 6,
+                              ),
+                              minimumSize: Size.zero,
+                              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                          const Spacer(),
+                          FilledButton.icon(
+                            icon: const Icon(Icons.send, size: 14),
+                            label: const Text('Send Test'),
+                            onPressed: () => _sendMessage(dev),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-                subtitle: Text(
-                  '${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}',
-                ),
-                trailing: FilledButton.icon(
-                  icon: const Icon(Icons.send, size: 14),
-                  label: const Text('Send Test'),
-                  onPressed: () => _sendMessage(dev),
-                ),
-              ),
-            ),
+              );
+            },
           ),
       ],
     );
