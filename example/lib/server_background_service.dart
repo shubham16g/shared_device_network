@@ -12,7 +12,6 @@ import 'package:shared_device_network/shared_device_network.dart';
 const int kDefaultBgServerPort = 9888;
 const int kDefaultBgDiscoveryPort = 9889;
 
-const String kNotificationChannelId = 'shared_device_bg_service_channel';
 const int kNotificationId = 988;
 
 /// Preference keys for persistence
@@ -247,7 +246,6 @@ class ServerBackgroundServiceController {
           autoStart: false,
           autoStartOnBoot: false,
           isForegroundMode: true,
-          notificationChannelId: kNotificationChannelId,
           initialNotificationTitle: 'Shared Device Service',
           initialNotificationContent:
               'Shared Device background server is running',
