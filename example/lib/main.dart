@@ -1,18 +1,9 @@
-import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_device_network/shared_device_network.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
-  // 1. Initialize server configuration (does NOT start sockets or show notification yet)
-  await SharedDeviceNetworkServer.init(
-    port: 8888,
-    discoveryPort: 8889,
-    notificationTitle: '{devices} ({deviceCount} Active)',
-    notificationText: 'Sharing on port {port}',
-  );
 
   runApp(const SharedDeviceApp());
 }
@@ -41,9 +32,12 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen>
+    with SingleTickerProviderStateMixin {
   late final TabController _tabController;
   late final SharedDeviceNetworkClient _client;
+
+  late final SharedDeviceNetworkServer server;
 
   final List<String> _logs = [];
   List<SharedDevice> _discoveredDevices = [];
@@ -54,24 +48,20 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
 
-    // 2. Register global incoming message handler
-    SharedDeviceNetworkServer.onDataReceived((deviceId, message) {
-      _log('📥 Host received for "$deviceId": $message');
-      return SharedDeviceResponse.success(
-        message: 'Processed by $deviceId',
-        data: {'echo': message, 'time': DateTime.now().toIso8601String()},
-      );
-    });
+    server = SharedDeviceNetworkServer(
+      port: 8888,
+      discoveryPort: 8889,
+      onMessageReceived: (deviceId, message) async {
+        _log('📥 Host received for "$deviceId": $message');
+        return SharedDeviceResponse.success(
+          message: 'Processed by $deviceId',
+          data: {'echo': message, 'time': DateTime.now().toIso8601String()},
+        );
+      },
+    );
+    server.start();
 
-    // 3. Listen to server logs
-    SharedDeviceNetworkServer.onLog((msg) => _log('⚙️ $msg'));
-
-    // 4. Request Android runtime permissions (Notification + Battery exemption)
-    if (Platform.isAndroid) {
-      SharedDeviceNetworkServer.requestPermissions();
-    }
-
-    // 5. Initialize client for testing discovery and dispatch
+    // 3. Initialize client for testing discovery and dispatch
     _client = SharedDeviceNetworkClient(
       deviceId: 'client-app-01',
       deviceName: 'Waiter Tablet',
@@ -93,6 +83,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   void dispose() {
     _tabController.dispose();
     _client.dispose();
+    server.dispose();
     super.dispose();
   }
 
@@ -106,24 +97,22 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     String? description,
     String? pairKey,
   }) async {
-    final success = await SharedDeviceNetworkServer.addDevice(
+    await server.addDevice(
       id,
       name,
       deviceDescription: description,
       pairKey: pairKey,
     );
-    if (success) {
-      _log('✅ Shared device added: $name ($id)');
-      setState(() {});
-    }
+
+    _log('✅ Shared device added: $name ($id)');
+    setState(() {});
   }
 
   Future<void> _removeDevice(String deviceId) async {
-    final success = await SharedDeviceNetworkServer.removeDevice(deviceId);
-    if (success) {
-      _log('🗑️ Removed device: $deviceId');
-      setState(() {});
-    }
+    await server.removeDevice(deviceId);
+
+    _log('🗑️ Removed device: $deviceId');
+    setState(() {});
   }
 
   void _showAddDeviceDialog({bool autoFillSample = false}) {
@@ -185,7 +174,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           title: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Add Device', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text(
+                'Add Device',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
               IconButton.filledTonal(
                 tooltip: 'Randomly fill form',
                 icon: const Icon(Icons.refresh),
@@ -278,7 +270,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     setState(() => _isDiscovering = true);
     _log('🔍 Client broadcasting discovery request...');
     try {
-      final found = await _client.discoverDevicesOnce(timeout: const Duration(seconds: 2));
+      final found = await _client.discoverDevicesOnce(
+        timeout: const Duration(seconds: 2),
+      );
       setState(() {
         _discoveredDevices = found;
         _isDiscovering = false;
@@ -292,11 +286,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   Future<void> _sendMessage(SharedDevice dev) async {
     _log('📤 Client sending to "${dev.deviceName}" (${dev.deviceId})...');
-    final status = await _client.sendToDevice(
-      dev.deviceId,
-      {'action': 'PRINT_TEST', 'item': 'Coffee x2', 'total': 9.50},
-      targetDevice: dev,
-    );
+    final status = await _client.sendToDevice(dev.deviceId, {
+      'action': 'PRINT_TEST',
+      'item': 'Coffee x2',
+      'total': 9.50,
+    }, targetDevice: dev);
     if (status.isSuccess) {
       _log('✅ ACK from ${dev.deviceId}: ${status.message}');
     } else {
@@ -306,8 +300,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
-    final isRunning = SharedDeviceNetworkServer.isRunning;
-    final deviceCount = SharedDeviceNetworkServer.deviceCount;
+    final isRunning = server.isRunning;
+    final deviceCount = server.deviceCount;
 
     return Scaffold(
       appBar: AppBar(
@@ -315,8 +309,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         bottom: TabBar(
           controller: _tabController,
           tabs: [
-            Tab(icon: const Icon(Icons.router), text: 'Host Server ($deviceCount)'),
-            Tab(icon: const Icon(Icons.devices), text: 'Client (${_discoveredDevices.length})'),
+            Tab(
+              icon: const Icon(Icons.router),
+              text: 'Host Server ($deviceCount)',
+            ),
+            Tab(
+              icon: const Icon(Icons.devices),
+              text: 'Client (${_discoveredDevices.length})',
+            ),
           ],
         ),
       ),
@@ -330,19 +330,23 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               children: [
                 Icon(
                   isRunning ? Icons.check_circle : Icons.pause_circle_outline,
-                  color: isRunning ? Colors.green.shade700 : Colors.amber.shade800,
+                  color: isRunning
+                      ? Colors.green.shade700
+                      : Colors.amber.shade800,
                   size: 20,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     isRunning
-                        ? 'Server Active • Sharing $deviceCount device(s) • Notification shown'
-                        : 'Server Inactive • Notification stopped (add a device below to start)',
+                        ? 'Server Active • Sharing $deviceCount device(s)'
+                        : 'Server Inactive (add a device below to start)',
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w600,
-                      color: isRunning ? Colors.green.shade900 : Colors.amber.shade900,
+                      color: isRunning
+                          ? Colors.green.shade900
+                          : Colors.amber.shade900,
                     ),
                   ),
                 ),
@@ -354,10 +358,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           Expanded(
             child: TabBarView(
               controller: _tabController,
-              children: [
-                _buildHostServerTab(),
-                _buildClientTab(),
-              ],
+              children: [_buildHostServerTab(), _buildClientTab()],
             ),
           ),
 
@@ -369,7 +370,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   }
 
   Widget _buildHostServerTab() {
-    final devices = SharedDeviceNetworkServer.devices;
+    final devices = server.devices;
 
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -389,8 +390,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                     style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                   ),
                   style: FilledButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 32,
+                      vertical: 16,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -400,7 +406,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   iconSize: 22,
                   style: IconButton.styleFrom(
                     padding: const EdgeInsets.all(14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
                   ),
                   onPressed: () => _showAddDeviceDialog(autoFillSample: true),
                 ),
@@ -411,7 +419,10 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         const SizedBox(height: 12),
 
         // Shared devices list
-        Text('Currently Shared on LAN (${devices.length})', style: Theme.of(context).textTheme.titleSmall),
+        Text(
+          'Currently Shared on LAN (${devices.length})',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
         const SizedBox(height: 8),
         if (devices.isEmpty)
           Card(
@@ -434,10 +445,19 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               margin: const EdgeInsets.only(bottom: 8),
               child: ListTile(
                 leading: CircleAvatar(
-                  child: Icon(dev.deviceId.contains('scanner') ? Icons.qr_code_scanner : Icons.print),
+                  child: Icon(
+                    dev.deviceId.contains('scanner')
+                        ? Icons.qr_code_scanner
+                        : Icons.print,
+                  ),
                 ),
-                title: Text(dev.deviceName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: Text('${dev.deviceId} • ${dev.deviceDescription ?? "No description"}'),
+                title: Text(
+                  dev.deviceName,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: Text(
+                  '${dev.deviceId} • ${dev.deviceDescription ?? "No description"}',
+                ),
                 trailing: IconButton(
                   icon: const Icon(Icons.delete_outline, color: Colors.red),
                   tooltip: 'Remove device',
@@ -457,11 +477,18 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('Discovered LAN Peripherals', style: Theme.of(context).textTheme.titleSmall),
+            Text(
+              'Discovered LAN Peripherals',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
             FilledButton.tonalIcon(
               onPressed: _isDiscovering ? null : _discoverDevices,
               icon: _isDiscovering
-                  ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
                   : const Icon(Icons.refresh, size: 16),
               label: const Text('Discover'),
             ),
@@ -489,8 +516,13 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
               margin: const EdgeInsets.only(bottom: 8),
               child: ListTile(
                 leading: const CircleAvatar(child: Icon(Icons.devices)),
-                title: Text(dev.deviceName, style: const TextStyle(fontWeight: FontWeight.bold)),
-                subtitle: Text('${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}'),
+                title: Text(
+                  dev.deviceName,
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: Text(
+                  '${dev.deviceId} • ${dev.deviceIp}:${dev.devicePort}',
+                ),
                 trailing: FilledButton.icon(
                   icon: const Icon(Icons.send, size: 14),
                   label: const Text('Send'),
@@ -507,7 +539,9 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     return Container(
       height: 140,
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        color: Theme.of(
+          context,
+        ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
         border: Border(top: BorderSide(color: Colors.grey.shade300)),
       ),
       child: Column(
@@ -517,11 +551,17 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text('Activity Logs', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                const Text(
+                  'Activity Logs',
+                  style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                ),
                 if (_logs.isNotEmpty)
                   InkWell(
                     onTap: () => setState(() => _logs.clear()),
-                    child: const Text('Clear', style: TextStyle(fontSize: 11, color: Colors.blue)),
+                    child: const Text(
+                      'Clear',
+                      style: TextStyle(fontSize: 11, color: Colors.blue),
+                    ),
                   ),
               ],
             ),
@@ -529,15 +569,26 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
           const Divider(height: 1),
           Expanded(
             child: _logs.isEmpty
-              ? const Center(child: Text('No activity yet', style: TextStyle(fontSize: 11, color: Colors.grey)))
-              : ListView.builder(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                  itemCount: _logs.length,
-                  itemBuilder: (ctx, i) => Text(
-                    _logs[i],
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                ? const Center(
+                    child: Text(
+                      'No activity yet',
+                      style: TextStyle(fontSize: 11, color: Colors.grey),
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 4,
+                    ),
+                    itemCount: _logs.length,
+                    itemBuilder: (ctx, i) => Text(
+                      _logs[i],
+                      style: const TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 11,
+                      ),
+                    ),
                   ),
-                ),
           ),
         ],
       ),

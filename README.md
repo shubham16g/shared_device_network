@@ -1,52 +1,60 @@
 # Shared Device Network (`shared_device_network`)
 
-A Flutter and Dart package for sharing connected hardware/peripheral devices (e.g. Bluetooth printers, USB barcode scanners, cash drawers, secondary screens) over the local WiFi/LAN network using UDP discovery, incremental ACK messaging, per-device pairing authorization, and automated foreground service execution.
+A lightweight Flutter and Dart package for sharing connected hardware and peripheral devices (e.g. Bluetooth printers, USB barcode scanners, cash drawers, secondary customer displays, digital scales) across a local WiFi/LAN network using UDP discovery, reliable incremental ACK messaging, and per-device pairing keys.
 
 ---
 
 ## 💡 Concept & Architecture
 
-1. **One Host Server per Device / Phone**:
-   - The host machine/phone exposes peripherals through `SharedDeviceNetworkServer`.
-   - The phone has locally connected peripherals (e.g. Bluetooth Receipt Printer, USB Scanner).
-2. **Sharing Connected Devices via `addDevice`**:
-   - Calling `SharedDeviceNetworkServer.addDevice('printer-1', 'Bluetooth Printer')` registers the peripheral and **automatically starts the UDP server** (and launches the Android foreground notification).
-   - Calling `SharedDeviceNetworkServer.addDevice('scanner-1', 'Barcode Scanner')` appends the new peripheral to the running server.
-3. **Lazy Start & Auto-Stop Lifecycle**:
-   - `SharedDeviceNetworkServer.init(...)` prepares configurations and background service without showing any notification or opening network sockets.
-   - The UDP server and foreground notification **only start when at least one device is added**.
-   - When all shared devices are removed via `SharedDeviceNetworkServer.removeDevice(...)`, the UDP server and foreground notification **automatically stop**.
-4. **Multi-Device Discovery on Client**:
-   - When a client broadcasts a discovery request, the host server responds with **all** its currently shared connected devices.
-   - The client discovers 1 UDP server host, and receives separate `SharedDevice` records for each peripheral!
+1. **Host Server (`SharedDeviceNetworkServer`)**:
+   - Runs on the host machine/terminal that has physical or Bluetooth connections to peripherals.
+   - Binds a UDP data port (default: `8888`) and a UDP discovery port (default: `8889`).
+   - Receives commands/data from network clients and routes them to the appropriate local device handler via `onMessageReceived`.
+2. **Device Registration (`addDevice` & `removeDevice`)**:
+   - Register peripherals dynamically with unique IDs, human-readable names, optional descriptions, pair keys, and metadata.
+   - Throws clear `ArgumentError` exceptions if device IDs are empty or already registered.
+3. **Multi-Device UDP Discovery (`SharedDeviceNetworkClient`)**:
+   - When a client broadcasts a discovery request on the LAN, the server responds with details of all currently registered peripherals.
+   - The client discovers the host and receives individual `SharedDevice` descriptors for each peripheral.
+4. **Reliable Communication & Pairing Security**:
+   - Packets include sequential message IDs and return structured `SharedDeviceResponse` acknowledgments (with status codes like `200`, `401`, `404`, `408`).
+   - Devices can be protected with a `pairKey` to enforce authorization before commands are dispatched.
 
 ---
 
 ## 🚀 Features
 
-- **📡 Multi-Device UDP Discovery**: Emits all shared connected devices hosted on a machine/phone to discovering clients.
-- **⚡ Automatic Lifecycle Management**: UDP server and foreground notification auto-start on the first `addDevice()` and auto-stop when the last device is removed.
-- **🔢 Incremental Message IDs & Reliable ACKs**: Tracks message transmission with incremental IDs and returns structured `SharedDeviceResponse` responses.
-- **🔐 Per-Device Pairing & Authorization**: Optional `pairKey` per shared device.
-- **📱 Persistent Background Service**: Keeps the server running and peripherals shared even when the app UI is closed or killed.
-- **🌐 Cross-Platform**: Android, iOS, Windows, macOS, Linux.
+- **📡 Multi-Device UDP Discovery**: Emits all shared connected peripherals hosted on a machine to discovering network clients.
+- **🎛️ Explicit Lifecycle Control**: Start, stop, and dispose UDP sockets cleanly with `start()`, `stop()`, and `dispose()`.
+- **🔢 Reliable Messaging & ACKs**: Sequence tracking with message IDs and structured `SharedDeviceResponse` acknowledgments.
+- **🔐 Per-Device Pair Key Security**: Optional password/key per shared device (returns `401 Unauthorized` on mismatch).
+- **🛡️ Robust Input Validation**: Validates device registration to prevent empty or duplicate device IDs.
+- **🌐 Cross-Platform**: Android, iOS, Windows, macOS, and Linux.
 
 ---
 
 ## 📦 Installation
+
+Add `shared_device_network` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
   shared_device_network: ^0.0.1
 ```
 
+Then run:
+
+```bash
+flutter pub get
+```
+
 ---
 
 ## 🛠️ Usage
 
-### 1. Host Phone: Sharing Connected Devices
+### 1. Host Device: Sharing Connected Devices
 
-All server capabilities are accessed through the unified `SharedDeviceNetworkServer` class:
+Instantiate `SharedDeviceNetworkServer` with your message handling callback, start it, and register your peripherals:
 
 ```dart
 import 'package:flutter/material.dart';
@@ -55,57 +63,55 @@ import 'package:shared_device_network/shared_device_network.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // 1. Initialize server configuration (does not start server or show notification yet)
-  // Supports dynamic placeholders: {devices}, {deviceCount}, {port}
-  await SharedDeviceNetworkServer.init(
+  // 1. Instantiate the server with the message handler
+  final server = SharedDeviceNetworkServer(
     port: 8888,
     discoveryPort: 8889,
-    notificationChannelName: 'Background Service',
-    notificationChannelDescription: 'Active peripheral sharing service',
-    notificationId: 888,
-    notificationTitle: '{devices} ({deviceCount} Active)',
-    notificationText: 'Sharing on port {port}...',
+    onMessageReceived: (deviceId, message) async {
+      print('📥 Host received for "$deviceId": $message');
+
+      if (deviceId == 'printer-bt-01') {
+        // Forward print bytes to Bluetooth printer...
+        return SharedDeviceResponse.success(
+          message: 'Receipt printed successfully',
+          data: {'printedAt': DateTime.now().toIso8601String()},
+        );
+      } else if (deviceId == 'scanner-usb-01') {
+        // Trigger barcode scan...
+        return SharedDeviceResponse.success(
+          message: 'Scan completed',
+          data: {'barcode': '890123456789'},
+        );
+      }
+
+      return SharedDeviceResponse.deviceNotFound(
+        message: 'Device "$deviceId" not found',
+      );
+    },
   );
 
-  // 2. Register incoming data/command handler
-  SharedDeviceNetworkServer.onDataReceived((deviceId, message) async {
-    print('Received command for device $deviceId: $message');
+  // 2. Start listening on UDP sockets
+  await server.start();
 
-    if (deviceId == 'printer-bt-01') {
-      // Forward print bytes to Bluetooth printer...
-      return SharedDeviceResponse.success(message: 'Receipt printed successfully');
-    } else if (deviceId == 'scanner-usb-01') {
-      // Trigger barcode scan...
-      return SharedDeviceResponse.success(message: 'Scan triggered', data: {'barcode': '890123456789'});
-    }
-
-    return SharedDeviceResponse.deviceNotFound();
-  });
-
-  runApp(const MyApp());
-}
-
-// Sharing Peripherals
-Future<void> shareDevices() async {
-  // 3. Add first device -> Automatically starts the UDP server & shows notification!
-  await SharedDeviceNetworkServer.addDevice(
+  // 3. Register shared peripherals
+  await server.addDevice(
     'printer-bt-01',
     'Kitchen Bluetooth Printer',
-    deviceDescription: 'Thermal 80mm ESC/POS printer',
+    deviceDescription: 'Thermal 80mm ESC/POS receipt printer',
   );
 
-  // 4. Add second device -> Appends to existing running server
-  await SharedDeviceNetworkServer.addDevice(
+  await server.addDevice(
     'scanner-usb-01',
     'Counter Barcode Scanner',
-    pairKey: 'scanner-key-123',
+    deviceDescription: 'USB 2D Barcode & QR Scanner',
+    pairKey: 'scanner-pass-123', // Optional authorization key
   );
 
-  // 5. Remove a device
-  // await SharedDeviceNetworkServer.removeDevice('printer-bt-01');
+  // 4. Remove a device when disconnected or unshared
+  // await server.removeDevice('printer-bt-01');
 
-  // When all devices are removed, the UDP server automatically stops and the notification is dismissed!
-  // await SharedDeviceNetworkServer.removeDevice('scanner-usb-01');
+  // 5. Cleanup when finished
+  // await server.dispose();
 }
 ```
 
@@ -113,98 +119,107 @@ Future<void> shareDevices() async {
 
 ### 2. Client Device: Discovering & Sending to Shared Devices
 
+Clients discover available peripherals on the LAN and dispatch commands:
+
 ```dart
 import 'package:shared_device_network/shared_device_network.dart';
 
 void main() async {
+  // 1. Create client instance
   final client = SharedDeviceNetworkClient(
     deviceId: 'waiter-tablet-01',
     deviceName: 'Waiter Tablet #1',
     discoveryPort: 8889,
-    defaultTimeout: Duration(seconds: 4),
+    defaultTimeout: const Duration(seconds: 3),
   );
 
-  // Discover all shared devices across the network
-  final devices = await client.discoverDevicesOnce();
+  // 2. Discover shared devices on the local network
+  final List<SharedDevice> devices = await client.discoverDevicesOnce(
+    timeout: const Duration(seconds: 2),
+  );
+
   for (final device in devices) {
-    print('Found: ${device.deviceName} (ID: ${device.deviceId}) at ${device.deviceIp}:${device.devicePort}');
+    print('Found: ${device.deviceName} (${device.deviceId}) at ${device.deviceIp}:${device.devicePort}');
   }
 
-  // Send print job to the Bluetooth Printer
+  // 3. Send command to the printer
   final printResponse = await client.sendToDevice(
     'printer-bt-01',
     {'cmd': 'PRINT_BILL', 'table': 4, 'total': 45.50},
   );
 
   if (printResponse.isSuccess) {
-    print('✅ Printed: ${printResponse.message}');
+    print('✅ Print ACK: ${printResponse.message}');
+  } else {
+    print('❌ Print failed [${printResponse.statusCode}]: ${printResponse.message}');
   }
 
-  // Send command to the Barcode Scanner with pairKey
+  // 4. Send command to the protected scanner with pairKey
   final scanResponse = await client.sendToDevice(
     'scanner-usb-01',
     {'cmd': 'TRIGGER_SCAN'},
-    pairKey: 'scanner-key-123',
+    pairKey: 'scanner-pass-123',
   );
 
-  print('Scan Result: ${scanResponse.data}');
+  if (scanResponse.isSuccess) {
+    print('✅ Scanned barcode: ${scanResponse.data?['barcode']}');
+  }
+
+  // 5. Cleanup client when done
+  // await client.dispose();
 }
 ```
 
 ---
 
-## 🤖 Android Foreground Service Setup
+## 📋 API Overview
 
-In `android/app/src/main/AndroidManifest.xml`:
+### `SharedDeviceNetworkServer`
 
-```xml
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Network & Bluetooth Permissions -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+| Method / Property | Description |
+| :--- | :--- |
+| `SharedDeviceNetworkServer({required onMessageReceived, port, discoveryPort})` | Creates a new server instance. |
+| `start()` | Binds the UDP data and discovery sockets and begins listening. |
+| `stop()` | Closes UDP sockets and stops listening. |
+| `dispose()` | Stops the server, clears registered devices, and closes streams. |
+| `addDevice(id, name, {deviceDescription, pairKey, metadata})` | Registers a shared peripheral. Throws `ArgumentError` if ID is empty or duplicate. |
+| `removeDevice(id)` | Unregisters a shared peripheral. |
+| `hasDevice(id)` | Returns `true` if device with ID is registered. |
+| `getDevice(id)` | Retrieves the `SharedDeviceRecord` for the given ID. |
+| `devices` | Returns a list of all currently registered `SharedDeviceRecord` items. |
+| `deviceCount` | Number of currently registered devices. |
+| `isRunning` | Whether the server UDP sockets are active. |
+| `messageStream` | Stream of incoming valid `NetworkPacket` objects. |
 
-    <!-- Foreground Service & Keep-Alive Permissions -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+### `SharedDeviceResponse`
 
-    <application ...>
-        <!-- Declare BackgroundService with stopWithTask=false so it survives app termination -->
-        <service
-            android:name="id.flutter.flutter_background_service.BackgroundService"
-            android:foregroundServiceType="connectedDevice|dataSync"
-            android:stopWithTask="false"
-            android:enabled="true"
-            android:exported="true" />
-    </application>
-</manifest>
-```
-
-### Runtime Permissions
-
-On Android 13+ (API 33+), request notification and battery optimization permissions:
-
-```dart
-await SharedDeviceNetworkServer.requestPermissions();
-```
+| Status Factory | Status Code | Description |
+| :--- | :--- | :--- |
+| `SharedDeviceResponse.success(...)` | `200` | Successful operation ACK. |
+| `SharedDeviceResponse.deviceNotFound(...)` | `404` | Target peripheral is not registered on the server. |
+| `SharedDeviceResponse.unauthorized(...)` | `401` | Invalid or missing `pairKey`. |
+| `SharedDeviceResponse.badRequest(...)` | `400` | Malformed message or ambiguous target. |
+| `SharedDeviceResponse.error(...)` | `500` | Processing error / unhandled exception. |
 
 ---
 
 ## 🧪 Testing
 
+Run unit and integration tests:
+
 ```bash
 flutter test
 ```
+
+To run the interactive demo app:
+
+```bash
+cd example
+flutter run
+```
+
+---
+
+## 📄 License
+
+MIT License. See [LICENSE](LICENSE) for details.

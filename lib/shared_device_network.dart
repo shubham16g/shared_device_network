@@ -8,7 +8,10 @@ export 'src/models/status.dart';
 
 // Server
 export 'src/server/shared_device_network_server.dart'
-    show SharedDeviceNetworkServer, OnDataReceivedCallback;
+    show
+        SharedDeviceNetworkServer,
+        OnMessageReceivedCallback,
+        OnDataReceivedCallback;
 
 // Utilities
 export 'src/utils/notification_template.dart';
