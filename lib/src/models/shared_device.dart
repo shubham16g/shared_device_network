@@ -1,24 +1,33 @@
 import 'dart:convert';
 
-/// Represents a network device discovered or communicating within the shared device network.
+/// Represents a peripheral device (e.g. printer, scanner, display) hosted by a shared device network node.
 class SharedDevice {
-  /// Unique identifier of the device.
+  /// Unique identifier of the peripheral device (e.g. 'printer-01').
   final String deviceId;
 
-  /// Human-readable name of the device.
+  /// Human-readable name of the peripheral device (e.g. 'Kitchen Thermal Printer').
   final String deviceName;
 
   /// Optional description of the device or service.
   final String? deviceDescription;
 
-  /// IP address of the device on the local network.
+  /// IP address or hostname of the hosting device.
   final String deviceIp;
 
-  /// UDP port number the device is listening on.
+  /// HTTP port number the hosting device is listening on.
   final int devicePort;
 
-  /// Optional additional metadata attached to the device broadcast.
+  /// Whether this peripheral requires authentication (pairKey).
+  final bool isSecured;
+
+  /// List of capabilities advertised for this peripheral (e.g. ['escpos', 'thermal', 'cut']).
+  final List<String> capabilities;
+
+  /// Optional additional metadata attached to the peripheral.
   final Map<String, dynamic>? metadata;
+
+  /// Timestamp when this peripheral was registered on the server.
+  final DateTime? addedAt;
 
   const SharedDevice({
     required this.deviceId,
@@ -26,7 +35,10 @@ class SharedDevice {
     this.deviceDescription,
     required this.deviceIp,
     required this.devicePort,
+    this.isSecured = false,
+    this.capabilities = const [],
     this.metadata,
+    this.addedAt,
   });
 
   /// Creates a [SharedDevice] from a Map.
@@ -39,8 +51,15 @@ class SharedDevice {
       devicePort: (map['devicePort'] is int)
           ? map['devicePort'] as int
           : int.tryParse(map['devicePort']?.toString() ?? '0') ?? 0,
+      isSecured: map['isSecured'] == true,
+      capabilities: map['capabilities'] is List
+          ? (map['capabilities'] as List).map((e) => e.toString()).toList()
+          : const [],
       metadata: map['metadata'] is Map
           ? Map<String, dynamic>.from(map['metadata'] as Map)
+          : null,
+      addedAt: map['addedAt'] != null
+          ? DateTime.tryParse(map['addedAt'].toString())
           : null,
     );
   }
@@ -53,7 +72,10 @@ class SharedDevice {
       if (deviceDescription != null) 'deviceDescription': deviceDescription,
       'deviceIp': deviceIp,
       'devicePort': devicePort,
+      'isSecured': isSecured,
+      if (capabilities.isNotEmpty) 'capabilities': capabilities,
       if (metadata != null) 'metadata': metadata,
+      if (addedAt != null) 'addedAt': addedAt!.toIso8601String(),
     };
   }
 
@@ -81,7 +103,10 @@ class SharedDevice {
     String? deviceDescription,
     String? deviceIp,
     int? devicePort,
+    bool? isSecured,
+    List<String>? capabilities,
     Map<String, dynamic>? metadata,
+    DateTime? addedAt,
   }) {
     return SharedDevice(
       deviceId: deviceId ?? this.deviceId,
@@ -89,13 +114,16 @@ class SharedDevice {
       deviceDescription: deviceDescription ?? this.deviceDescription,
       deviceIp: deviceIp ?? this.deviceIp,
       devicePort: devicePort ?? this.devicePort,
+      isSecured: isSecured ?? this.isSecured,
+      capabilities: capabilities ?? this.capabilities,
       metadata: metadata ?? this.metadata,
+      addedAt: addedAt ?? this.addedAt,
     );
   }
 
   @override
   String toString() {
-    return 'SharedDevice(deviceId: $deviceId, deviceName: $deviceName, deviceIp: $deviceIp, devicePort: $devicePort, deviceDescription: $deviceDescription)';
+    return 'SharedDevice(id: $deviceId, name: $deviceName, ip: $deviceIp:$devicePort, secured: $isSecured)';
   }
 
   @override

@@ -1,13 +1,14 @@
 name: shared_device_network
-description: A lightweight Flutter & Dart package for local UDP hardware discovery, peripheral sharing, reliable ACK messaging, and device pairing.
-version: 0.0.1
+description: A Flutter & Dart package for local mDNS/DNS-SD discovery, HTTP communication, peripheral sharing, and device pairing across mobile, desktop, and web.
+version: 0.1.0
 homepage: https://github.com/shubham16g/shared_device_network
 repository: https://github.com/shubham16g/shared_device_network
 issue_tracker: https://github.com/shubham16g/shared_device_network/issues
 topics:
   - networking
-  - udp
-  - discovery
+  - mdns
+  - zeroconf
+  - http
   - hardware
   - pos
 
@@ -18,6 +19,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  bonsoir: ^7.1.5
+  http: ^1.2.0
+  mime: ^2.0.0
 
 dev_dependencies:
   flutter_test:

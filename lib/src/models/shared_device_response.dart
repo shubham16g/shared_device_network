@@ -2,10 +2,13 @@ import 'dart:convert';
 
 /// Represents the response / acknowledgment of a shared device network operation.
 class SharedDeviceResponse {
+  /// Unique request identifier matching the client request (if provided).
+  final String? requestId;
+
   /// Indicates whether the operation or request succeeded.
   final bool isSuccess;
 
-  /// HTTP-style status code for the operation (e.g. 200, 400, 401, 404, 408, 500).
+  /// HTTP-style status code for the operation (e.g. 200, 400, 401, 403, 404, 408, 409, 413, 500).
   final int statusCode;
 
   /// Human-readable message or description of the status.
@@ -21,6 +24,7 @@ class SharedDeviceResponse {
   final DateTime timestamp;
 
   SharedDeviceResponse({
+    this.requestId,
     required this.isSuccess,
     this.statusCode = 200,
     this.message = '',
@@ -31,12 +35,14 @@ class SharedDeviceResponse {
 
   /// Creates a successful [SharedDeviceResponse].
   factory SharedDeviceResponse.success({
+    String? requestId,
     String message = 'Success',
     dynamic data,
     int statusCode = 200,
     DateTime? timestamp,
   }) {
     return SharedDeviceResponse(
+      requestId: requestId,
       isSuccess: true,
       statusCode: statusCode,
       message: message,
@@ -48,12 +54,14 @@ class SharedDeviceResponse {
   /// Creates a failure / error [SharedDeviceResponse].
   factory SharedDeviceResponse.error(
     String error, {
+    String? requestId,
     String message = 'Operation failed',
     int statusCode = 500,
     dynamic data,
     DateTime? timestamp,
   }) {
     return SharedDeviceResponse(
+      requestId: requestId,
       isSuccess: false,
       statusCode: statusCode,
       message: message,
@@ -63,9 +71,10 @@ class SharedDeviceResponse {
     );
   }
 
-  /// Creates a timeout [SharedDeviceResponse] when an ACK is not received within the time limit.
+  /// Creates a timeout [SharedDeviceResponse] when a response is not received within the time limit.
   factory SharedDeviceResponse.timeout({
-    String message = 'Request timed out waiting for ACK',
+    String? requestId,
+    String message = 'Request timed out',
     Duration? timeout,
     int statusCode = 408,
   }) {
@@ -73,6 +82,7 @@ class SharedDeviceResponse {
         ? '$message (${timeout.inMilliseconds}ms)'
         : message;
     return SharedDeviceResponse(
+      requestId: requestId,
       isSuccess: false,
       statusCode: statusCode,
       message: timeoutMsg,
@@ -82,10 +92,12 @@ class SharedDeviceResponse {
 
   /// Creates an unauthorized [SharedDeviceResponse] when device authentication or pairKey validation fails.
   factory SharedDeviceResponse.unauthorized({
+    String? requestId,
     String message = 'Unauthorized device or invalid pair key',
     int statusCode = 401,
   }) {
     return SharedDeviceResponse(
+      requestId: requestId,
       isSuccess: false,
       statusCode: statusCode,
       message: message,
@@ -93,12 +105,29 @@ class SharedDeviceResponse {
     );
   }
 
+  /// Creates a forbidden [SharedDeviceResponse] when authenticated but access is denied.
+  factory SharedDeviceResponse.forbidden({
+    String? requestId,
+    String message = 'Access forbidden to this resource',
+    int statusCode = 403,
+  }) {
+    return SharedDeviceResponse(
+      requestId: requestId,
+      isSuccess: false,
+      statusCode: statusCode,
+      message: message,
+      error: 'FORBIDDEN',
+    );
+  }
+
   /// Creates a device not found [SharedDeviceResponse].
   factory SharedDeviceResponse.deviceNotFound({
+    String? requestId,
     String message = 'Target device not found or unreachable',
     int statusCode = 404,
   }) {
     return SharedDeviceResponse(
+      requestId: requestId,
       isSuccess: false,
       statusCode: statusCode,
       message: message,
@@ -108,11 +137,13 @@ class SharedDeviceResponse {
 
   /// Creates a bad request [SharedDeviceResponse].
   factory SharedDeviceResponse.badRequest({
+    String? requestId,
     String message = 'Invalid or malformed request',
     int statusCode = 400,
     dynamic data,
   }) {
     return SharedDeviceResponse(
+      requestId: requestId,
       isSuccess: false,
       statusCode: statusCode,
       message: message,
@@ -121,9 +152,42 @@ class SharedDeviceResponse {
     );
   }
 
+  /// Creates a conflict / duplicate [SharedDeviceResponse] (e.g. duplicate in-flight requestId).
+  factory SharedDeviceResponse.conflict({
+    String? requestId,
+    String message = 'Duplicate request or state conflict',
+    int statusCode = 409,
+    dynamic data,
+  }) {
+    return SharedDeviceResponse(
+      requestId: requestId,
+      isSuccess: false,
+      statusCode: statusCode,
+      message: message,
+      error: 'CONFLICT',
+      data: data,
+    );
+  }
+
+  /// Creates a payload too large [SharedDeviceResponse] (e.g. large file upload).
+  factory SharedDeviceResponse.payloadTooLarge({
+    String? requestId,
+    String message = 'Payload exceeds maximum permitted size',
+    int statusCode = 413,
+  }) {
+    return SharedDeviceResponse(
+      requestId: requestId,
+      isSuccess: false,
+      statusCode: statusCode,
+      message: message,
+      error: 'PAYLOAD_TOO_LARGE',
+    );
+  }
+
   /// Converts this [SharedDeviceResponse] to a Map.
   Map<String, dynamic> toMap() {
     return {
+      if (requestId != null) 'requestId': requestId,
       'isSuccess': isSuccess,
       'statusCode': statusCode,
       'message': message,
@@ -136,6 +200,7 @@ class SharedDeviceResponse {
   /// Creates a [SharedDeviceResponse] from a Map.
   factory SharedDeviceResponse.fromMap(Map<String, dynamic> map) {
     return SharedDeviceResponse(
+      requestId: map['requestId']?.toString(),
       isSuccess: map['isSuccess'] == true,
       statusCode: (map['statusCode'] is int)
           ? map['statusCode'] as int
@@ -168,15 +233,37 @@ class SharedDeviceResponse {
   /// Converts this [SharedDeviceResponse] to a JSON string.
   String toJson() => json.encode(toMap());
 
+  /// Returns a copy with overridden properties.
+  SharedDeviceResponse copyWith({
+    String? requestId,
+    bool? isSuccess,
+    int? statusCode,
+    String? message,
+    dynamic data,
+    String? error,
+    DateTime? timestamp,
+  }) {
+    return SharedDeviceResponse(
+      requestId: requestId ?? this.requestId,
+      isSuccess: isSuccess ?? this.isSuccess,
+      statusCode: statusCode ?? this.statusCode,
+      message: message ?? this.message,
+      data: data ?? this.data,
+      error: error ?? this.error,
+      timestamp: timestamp ?? this.timestamp,
+    );
+  }
+
   @override
   String toString() {
-    return 'SharedDeviceResponse(isSuccess: $isSuccess, statusCode: $statusCode, message: $message, error: $error, data: $data)';
+    return 'SharedDeviceResponse(id: $requestId, success: $isSuccess, status: $statusCode, message: $message, error: $error)';
   }
 
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     return other is SharedDeviceResponse &&
+        other.requestId == requestId &&
         other.isSuccess == isSuccess &&
         other.statusCode == statusCode &&
         other.message == message &&
@@ -185,7 +272,7 @@ class SharedDeviceResponse {
 
   @override
   int get hashCode {
-    return Object.hash(isSuccess, statusCode, message, error);
+    return Object.hash(requestId, isSuccess, statusCode, message, error);
   }
 }
 

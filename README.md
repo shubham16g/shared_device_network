@@ -1,35 +1,55 @@
 # Shared Device Network (`shared_device_network`)
 
-A lightweight Flutter and Dart package for sharing connected hardware and peripheral devices (e.g. Bluetooth printers, USB barcode scanners, cash drawers, secondary customer displays, digital scales) across a local WiFi/LAN network using UDP discovery, reliable incremental ACK messaging, and per-device pairing keys.
+A powerful Flutter and Dart package for local **mDNS / DNS-SD discovery**, **HTTP (REST + Binary/Multipart) communication**, peripheral sharing, and device pairing across **Android, iOS, macOS, Windows, Linux**, and **Flutter Web**.
 
 ---
 
-## 💡 Concept & Architecture
+## 💡 Architecture Overview
 
-1. **Host Server (`SharedDeviceNetworkServer`)**:
-   - Runs on the host machine/terminal that has physical or Bluetooth connections to peripherals.
-   - Binds a UDP data port (default: `8888`) and a UDP discovery port (default: `8889`).
-   - Receives commands/data from network clients and routes them to the appropriate local device handler via `onMessageReceived`.
-2. **Device Registration (`addDevice` & `removeDevice`)**:
-   - Register peripherals dynamically with unique IDs, human-readable names, optional descriptions, pair keys, and metadata.
-   - Throws clear `ArgumentError` exceptions if device IDs are empty or already registered.
-3. **Multi-Device UDP Discovery (`SharedDeviceNetworkClient`)**:
-   - When a client broadcasts a discovery request on the LAN, the server responds with details of all currently registered peripherals.
-   - The client discovers the host and receives individual `SharedDevice` descriptors for each peripheral.
-4. **Reliable Communication & Pairing Security**:
-   - Packets include sequential message IDs and return structured `SharedDeviceResponse` acknowledgments (with status codes like `200`, `401`, `404`, `408`).
-   - Devices can be protected with a `pairKey` to enforce authorization before commands are dispatched.
+`shared_device_network` provides seamless device discovery and communication across the local area network:
+
+- **Device-Centric Discovery (mDNS + REST)**: Clients discover available **devices** across the LAN. In the background, host servers are detected via mDNS (`_shared-device._tcp`), and each peripheral is automatically tagged with its hosting IP address and port (`deviceIp`, `devicePort`).
+- **Transparent Host Servers**: The host server acts as a lightweight network host for connected hardware without requiring `serverId` or `serverName` configuration or publishing server identities to clients.
+- **Communication (HTTP/1.1 REST + Binary)**: All application requests, peripheral commands, and file transfers operate over versioned HTTP (`/api/v1/...`).
+- **Flutter Web Client Support**: Flutter Web compiles and functions as a full-featured HTTP client. Web clients connect directly to hosts by IP and port (`client.getDevicesFromHost`) with full CORS support.
+
+```
+                      Local WiFi / LAN
+                             │
+            ┌────────────────┴────────────────┐
+            │                                 │
+     Native Host A                     Native Host B
+  Android/iOS/Desktop               Android/iOS/Desktop
+   (dart:io HttpServer)              (dart:io HttpServer)
+     [Printer, Scanner]               [Display, Scale]
+            │                                 │
+      HTTP REST API                     HTTP REST API
+            │                                 │
+            └────────────────┬────────────────┘
+                             │
+                       mDNS / DNS-SD
+                   (_shared-device._tcp)
+                             │
+            ┌────────────────┴────────────────┐
+            │                                 │
+       Flutter App                       Flutter Web
+      Native Client                     Browser Client
+  (mDNS Scan -> Devices)             (Query by IP -> Devices)
+```
 
 ---
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **📡 Multi-Device UDP Discovery**: Emits all shared connected peripherals hosted on a machine to discovering network clients.
-- **🎛️ Explicit Lifecycle Control**: Start, stop, and dispose UDP sockets cleanly with `start()`, `stop()`, and `dispose()`.
-- **🔢 Reliable Messaging & ACKs**: Sequence tracking with message IDs and structured `SharedDeviceResponse` acknowledgments.
-- **🔐 Per-Device Pair Key Security**: Optional password/key per shared device (returns `401 Unauthorized` on mismatch).
-- **🛡️ Robust Input Validation**: Validates device registration to prevent empty or duplicate device IDs.
-- **🌐 Cross-Platform**: Android, iOS, Windows, macOS, and Linux.
+- **📡 Zero-Conf mDNS Device Discovery**: Discovers devices across the LAN with automatic IP and port tagging (`deviceIp:devicePort`).
+- **🌐 HTTP REST Application Transport**: Replaces raw UDP datagrams with clean HTTP endpoints (`/api/v1/info`, `/api/v1/devices`, `/command`, `/content`).
+- **💻 Flutter Web Support**: Compiles for Web as an HTTP client. Communicates with native hosts with full CORS support.
+- **📦 Binary & File Uploads**: Native support for images, PDFs, ESC/POS byte arrays, and multipart forms without base64 JSON bloat.
+- **🔁 Request IDs & Idempotency**: Automatic `requestId` generation and server-side response caching to prevent duplicate execution of critical commands (e.g. receipt printing, cash drawer triggering).
+- **🔐 Pair Key Authentication**: Secure device authorization via `Authorization: Bearer <pairKey>` or `X-Pair-Key`. Secrets are never logged or broadcast over mDNS.
+- **📱 Android Foreground Service**: Built-in support for continuous background server operation on Android.
+- **🛡️ Configurable CORS**: Configurable cross-origin policies for serving browser clients.
+- **🔒 TLS / HTTPS Ready**: Pass a `SecurityContext` for encrypted communications where required.
 
 ---
 
@@ -39,7 +59,7 @@ Add `shared_device_network` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  shared_device_network: ^0.0.1
+  shared_device_network: ^0.1.0
 ```
 
 Then run:
@@ -50,341 +70,194 @@ flutter pub get
 
 ---
 
-## 🛠️ Usage
+## 📱 Platform Configuration
 
-### 1. Host Device: Sharing Connected Devices
+### Android
 
-Instantiate `SharedDeviceNetworkServer`, register your message handling callback with `server.onMessageReceived(...)`, start it, and register your peripherals:
+Add local network, multicast, and foreground service permissions to `android/app/src/main/AndroidManifest.xml`:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+</manifest>
+```
+
+### iOS / macOS
+
+Add the local network usage description and Bonjour service type to `ios/Runner/Info.plist`:
+
+```xml
+<key>NSLocalNetworkUsageDescription</key>
+<string>Shared Device Network requires local network access to discover and communicate with POS hardware.</string>
+<key>NSBonjourServices</key>
+<array>
+    <string>_shared-device._tcp</string>
+</array>
+```
+
+---
+
+## 🛠️ Usage Guide
+
+### 1. Running a Host Server (Native)
+
+Instantiate `SharedDeviceNetworkServer`, register command and binary callbacks, start the server, and register peripherals:
 
 ```dart
-import 'package:flutter/material.dart';
 import 'package:shared_device_network/shared_device_network.dart';
 
 void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
-
-  // 1. Instantiate the server
+  // 1. Create server instance
   final server = SharedDeviceNetworkServer();
 
-  // 2. Register callback for incoming messages/commands
+  // 2. Handle incoming JSON commands
   server.onMessageReceived((deviceId, message) async {
-    print('📥 Host received for "$deviceId": $message');
+    print('Command for $deviceId: $message');
 
-    if (deviceId == 'printer-bt-01') {
-      // Forward print bytes to Bluetooth printer...
+    if (deviceId == 'printer-01') {
+      // Forward print bytes to physical ESC/POS printer...
       return SharedDeviceResponse.success(
         message: 'Receipt printed successfully',
         data: {'printedAt': DateTime.now().toIso8601String()},
       );
-    } else if (deviceId == 'scanner-usb-01') {
-      // Trigger barcode scan...
-      return SharedDeviceResponse.success(
-        message: 'Scan completed',
-        data: {'barcode': '890123456789'},
-      );
     }
 
-    return SharedDeviceResponse.deviceNotFound(
-      message: 'Device "$deviceId" not found',
-    );
+    return SharedDeviceResponse.deviceNotFound();
   });
 
-  // 3. Start listening on UDP sockets (with optional custom ports)
-  await server.start(
-    port: 8888,
-    discoveryPort: 8889,
-  );
-
-  // 3. Register shared peripherals
-  await server.addDevice(
-    'printer-bt-01',
-    'Kitchen Bluetooth Printer',
-    deviceDescription: 'Thermal 80mm ESC/POS receipt printer',
-  );
-
-  await server.addDevice(
-    'scanner-usb-01',
-    'Counter Barcode Scanner',
-    deviceDescription: 'USB 2D Barcode & QR Scanner',
-    pairKey: 'scanner-pass-123', // Optional authorization key
-  );
-
-  // 4. Remove a device when disconnected or unshared
-  // await server.removeDevice('printer-bt-01');
-
-  // 5. Cleanup when finished
-  // await server.dispose();
-}
-```
-
----
-
-### 2. Client Device: Discovering & Sending to Shared Devices
-
-Clients discover available peripherals on the LAN and dispatch commands:
-
-```dart
-import 'package:shared_device_network/shared_device_network.dart';
-
-void main() async {
-  // 1. Create client instance
-  final client = SharedDeviceNetworkClient(
-    deviceId: 'waiter-tablet-01',
-    deviceName: 'Waiter Tablet #1',
-    discoveryPort: 8889,
-    defaultTimeout: const Duration(seconds: 3),
-  );
-
-  // 2. Discover shared devices on the local network
-  final List<SharedDevice> devices = await client.discoverDevicesOnce(
-    timeout: const Duration(seconds: 2),
-  );
-
-  for (final device in devices) {
-    print('Found: ${device.deviceName} (${device.deviceId}) at ${device.deviceIp}:${device.devicePort}');
-  }
-
-  // 3. Send command to the printer
-  final printResponse = await client.sendToDevice(
-    'printer-bt-01',
-    {'cmd': 'PRINT_BILL', 'table': 4, 'total': 45.50},
-  );
-
-  if (printResponse.isSuccess) {
-    print('✅ Print ACK: ${printResponse.message}');
-  } else {
-    print('❌ Print failed [${printResponse.statusCode}]: ${printResponse.message}');
-  }
-
-  // 4. Send command to the protected scanner with pairKey
-  final scanResponse = await client.sendToDevice(
-    'scanner-usb-01',
-    {'cmd': 'TRIGGER_SCAN'},
-    pairKey: 'scanner-pass-123',
-  );
-
-  if (scanResponse.isSuccess) {
-    print('✅ Scanned barcode: ${scanResponse.data?['barcode']}');
-  }
-
-  // 5. Cleanup client when done
-  // await client.dispose();
-}
-```
-
----
-
-## 🔄 Running as a Background Service
-
-When using a mobile device or tablet as the host server (e.g. at a counter or POS terminal), you often want the server to continue listening for UDP discovery and processing peripheral commands even when the app is minimized, running in the background, or the screen is turned off.
-
-You can integrate `shared_device_network` with [`flutter_background_service`](https://pub.dev/packages/flutter_background_service) to run the server continuously in an Android Foreground Service.
-
-> **📱 Complete Working Example Included**:
-> A complete, production-ready example is available in the [`example/`](example) directory:
-> - [**`example/lib/server_background_service.dart`**](example/lib/server_background_service.dart): Implements background isolate lifecycle, device persistence with `shared_preferences`, and bidirectional event communication between UI and background service.
-> - [**`example/lib/bg_service_screen.dart`**](example/lib/bg_service_screen.dart): Interactive UI with server controls, hosted device manager, real-time packet logs, and an internal test client.
-> - [**`example/lib/main.dart`**](example/lib/main.dart): Demonstrates host & client tabs with one-tap access to background service mode via the **"In Background"** button.
-
-### 1. Add Dependencies
-
-Add the background service and permission handler to your app's `pubspec.yaml`:
-
-```yaml
-dependencies:
-  shared_device_network: ^0.0.1
-  flutter_background_service: ^5.1.0
-  permission_handler: ^11.3.1
-```
-
-### 2. Android Manifest Configuration
-
-In `android/app/src/main/AndroidManifest.xml`, declare the required permissions and foreground service:
-
-```xml
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Network & WakeLock permissions -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-
-    <!-- Foreground service permissions (Android 14+ requires specific types) -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
-    <application ...>
-        <!-- Declare BackgroundService with connectedDevice & dataSync types -->
-        <service
-            android:name="id.flutter.flutter_background_service.BackgroundService"
-            android:foregroundServiceType="connectedDevice|dataSync"
-            android:stopWithTask="false"
-            android:enabled="true"
-            android:exported="true" />
-    </application>
-</manifest>
-```
-
-### 3. Background Service Implementation (Pure Dart / Flutter)
-
-Configure and start the `SharedDeviceNetworkServer` inside your background isolate:
-
-```dart
-import 'dart:ui';
-import 'package:flutter/widgets.dart';
-import 'package:flutter_background_service/flutter_background_service.dart';
-import 'package:shared_device_network/shared_device_network.dart';
-
-// 1. Entry point for the background isolate
-@pragma('vm:entry-point')
-void onStart(ServiceInstance service) async {
-  DartPluginRegistrant.ensureInitialized();
-  WidgetsFlutterBinding.ensureInitialized();
-
-  final server = SharedDeviceNetworkServer();
-
-  // Register peripheral message handler
-  server.onMessageReceived((deviceId, message) async {
-    // Notify UI isolate via service pipe
-    service.invoke('messageReceived', {
-      'deviceId': deviceId,
-      'message': message,
-      'time': DateTime.now().toIso8601String(),
-    });
-
-    // Update foreground notification status
-    if (service is AndroidServiceInstance) {
-      service.setForegroundNotificationInfo(
-        title: 'Shared Device Background Server',
-        content: 'Processed command for "$deviceId"',
-      );
-    }
-
+  // 3. Handle incoming binary/file uploads (e.g. logos, receipts)
+  server.onBinaryReceived((deviceId, bytes, {required contentType, fileName, requestId}) async {
+    print('Received $contentType (${bytes.length} bytes) for $deviceId');
     return SharedDeviceResponse.success(
-      message: 'Processed by Background Service for $deviceId',
-      data: {'echo': message},
+      message: 'Binary content received',
+      data: {'bytes': bytes.length},
     );
   });
 
-  // Start server on dedicated background ports
-  await server.start(port: 9888, discoveryPort: 9889);
+  // 4. Start HTTP server and mDNS broadcast
+  await server.start(port: 8080);
 
-  // Register shared peripherals
-  await server.addDevice('printer-bt-01', 'Counter Thermal Printer');
-
-  // Handle stop signal from UI
-  service.on('stopService').listen((_) async {
-    await server.stop();
-    service.stopSelf();
-  });
-}
-
-@pragma('vm:entry-point')
-Future<bool> onIosBackground(ServiceInstance service) async {
-  WidgetsFlutterBinding.ensureInitialized();
-  DartPluginRegistrant.ensureInitialized();
-  return true;
-}
-
-// 2. Configure service from UI isolate (no native Kotlin/Java edits required!)
-Future<void> initializeBackgroundService() async {
-  final service = FlutterBackgroundService();
-
-  await service.configure(
-    androidConfiguration: AndroidConfiguration(
-      onStart: onStart,
-      autoStart: false,
-      autoStartOnBoot: false,
-      isForegroundMode: true,
-      // Omitting notificationChannelId lets the plugin automatically create
-      // and manage its internal FOREGROUND_DEFAULT notification channel.
-      initialNotificationTitle: 'Shared Device Service',
-      initialNotificationContent: 'Shared Device background server is running',
-      foregroundServiceNotificationId: 988,
-      foregroundServiceTypes: [
-        AndroidForegroundType.connectedDevice,
-        AndroidForegroundType.dataSync,
-      ],
-    ),
-    iosConfiguration: IosConfiguration(
-      autoStart: false,
-      onForeground: onStart,
-      onBackground: onIosBackground,
-    ),
+  // 5. Register shared peripherals
+  await server.addDevice(
+    'printer-01',
+    'Kitchen Thermal Printer',
+    deviceDescription: '80mm ESC/POS Printer',
+    pairKey: 'secret-1234', // Optional authentication
+    capabilities: ['escpos', 'thermal', 'cut'],
   );
 }
-
-// 3. Start or stop the service
-Future<void> startServerService() async {
-  await initializeBackgroundService();
-  await FlutterBackgroundService().startService();
-}
-
-void stopServerService() {
-  FlutterBackgroundService().invoke('stopService');
-}
 ```
 
 ---
 
-## 📋 API Overview
+### 2. Client Mode: Device Discovery & Direct Connection
 
-### `SharedDeviceNetworkServer`
+#### A. Native Client (Device Discovery)
 
-| Method / Property | Description |
-| :--- | :--- |
-| `SharedDeviceNetworkServer()` | Creates a new server instance. |
-| `onMessageReceived(callback)` | Registers callback invoked when a message is received for a peripheral. |
-| `start({port = 8888, discoveryPort = 8889, discoverPort})` | Binds the UDP data and discovery sockets and begins listening. |
-| `port` | Active UDP data port. |
-| `discoveryPort` | Active UDP discovery broadcast port. |
-| `stop()` | Closes UDP sockets and stops listening. |
-| `dispose()` | Stops the server, clears registered devices, and closes streams. |
-| `addDevice(id, name, {deviceDescription, pairKey, metadata})` | Registers a shared peripheral. Throws `ArgumentError` if ID is empty or duplicate. |
-| `removeDevice(id)` | Unregisters a shared peripheral. |
-| `hasDevice(id)` | Returns `true` if device with ID is registered. |
-| `getDevice(id)` | Retrieves the `SharedDeviceRecord` for the given ID. |
-| `devices` | Returns a list of all currently registered `SharedDeviceRecord` items. |
-| `deviceCount` | Number of currently registered devices. |
-| `isRunning` | Whether the server UDP sockets are active. |
-| `messageStream` | Stream of incoming valid `NetworkPacket` objects. |
+```dart
+final client = SharedDeviceNetworkClient();
 
-### `SharedDeviceResponse`
+// Discover devices advertising across the LAN
+final devices = await client.discoverDevicesOnce(
+  timeout: const Duration(seconds: 3),
+);
 
-| Status Factory | Status Code | Description |
-| :--- | :--- | :--- |
-| `SharedDeviceResponse.success(...)` | `200` | Successful operation ACK. |
-| `SharedDeviceResponse.deviceNotFound(...)` | `404` | Target peripheral is not registered on the server. |
-| `SharedDeviceResponse.unauthorized(...)` | `401` | Invalid or missing `pairKey`. |
-| `SharedDeviceResponse.badRequest(...)` | `400` | Malformed message or ambiguous target. |
-| `SharedDeviceResponse.error(...)` | `500` | Processing error / unhandled exception. |
+for (final dev in devices) {
+  print('Found ${dev.deviceName} (${dev.deviceId}) at ${dev.deviceIp}:${dev.devicePort}');
+}
+
+// Send command to peripheral directly (resolves address automatically)
+final response = await client.sendToDevice(
+  'printer-01',
+  {'command': 'PRINT_BILL', 'table': 4, 'total': 45.50},
+  pairKey: 'secret-1234',
+);
+
+print('Result: ${response.message} [Status: ${response.statusCode}]');
+```
+
+#### B. Flutter Web Client (Direct Connection)
+
+Web browsers cannot perform raw mDNS multicast scans or host servers. Instead, query devices directly by host IP and port:
+
+```dart
+final client = SharedDeviceNetworkClient();
+
+// Query devices from a known host IP on the LAN
+final devices = await client.getDevicesFromHost(
+  host: '192.168.1.100',
+  port: 8080,
+);
+
+for (final dev in devices) {
+  print('Device: ${dev.deviceName} at ${dev.deviceIp}:${dev.devicePort}');
+}
+
+// Send command to peripheral identical to native
+final response = await client.sendToDevice('printer-01', {'command': 'PRINT'});
+```
 
 ---
 
-## 🧪 Testing & Example App
+### 3. Binary & File Uploads
 
-Run the test suite:
+Send images, PDFs, or raw ESC/POS byte buffers directly over HTTP without base64 overhead:
 
-```bash
-flutter test
+```dart
+// 1. Raw byte buffer (e.g. image/png or application/octet-stream)
+final pngBytes = await File('receipt_logo.png').readAsBytes();
+
+final response = await client.sendBinaryToDevice(
+  'printer-01',
+  pngBytes,
+  contentType: 'image/png',
+  fileName: 'logo.png',
+  pairKey: 'secret-1234',
+);
+
+// 2. Multipart form upload
+final multiResponse = await client.sendMultipartToDevice(
+  'printer-01',
+  pngBytes,
+  fileName: 'logo.png',
+  pairKey: 'secret-1234',
+);
 ```
 
-### 📱 Running the Example Project
+---
 
-The repository includes a comprehensive Flutter example application under [`example/`](example):
+### 4. Idempotency & Duplicate Protection
 
-```bash
-cd example
-flutter run
+Every client request carries a unique `requestId`. The server tracks in-flight and recently executed requests:
+- **Duplicate in-flight request**: Server returns `HTTP 409 Conflict`.
+- **Retried completed request**: Server returns the cached `SharedDeviceResponse` immediately without re-executing peripheral actions (preventing double prints or accidental charges).
+
+---
+
+### 5. CORS (Cross-Origin Resource Sharing)
+
+The server provides a configurable CORS policy to safely support browser-based clients:
+
+```dart
+final server = SharedDeviceNetworkServer(
+  corsPolicy: CorsPolicy(
+    allowedOrigins: ['http://localhost:3000', 'https://pos.mycompany.com'],
+    allowCredentials: true,
+  ),
+);
 ```
 
-The example app includes:
-- **Host Server Mode**: Create virtual peripherals, adjust UDP ports, inspect incoming packets, and toggle discovery.
-- **Client Discovery Mode**: Auto-discover servers on the local WiFi network, list peripherals, and dispatch test commands with status response inspection.
-- **Background Service Mode**: Tap **"In Background"** in the top bar to launch the dedicated background service controller, allowing the host server to run in an Android foreground service with persistent notifications and background isolate execution.
+---
+
+## 🔒 Security Considerations
+
+- **Pair Keys**: Credentials are sent via `Authorization: Bearer <key>` headers. They are **never** published in mDNS TXT records and are stripped from public `GET /devices` responses.
+- **Request Limits**: Configurable body size limits (`maxBodySizeBytes`, default 50MB) protect against out-of-memory and denial-of-service attacks.
+- **HTTP vs. HTTPS**: While plain HTTP is standard for isolated LAN setups, production environments can provide a `SecurityContext` to enable TLS encryption on the server.
 
 ---
 

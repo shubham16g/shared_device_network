@@ -1,69 +1,118 @@
 import 'dart:async';
-import 'dart:io';
 
-import '../models/network_packet.dart';
-import '../models/shared_device.dart';
+import '../discovery/discovery_provider.dart';
+import '../models/cors_policy.dart';
 import '../models/shared_device_record.dart';
+import '../models/shared_device_request.dart';
 import '../models/shared_device_response.dart';
-import '../utils/network_utils.dart';
+import 'idempotency_manager.dart';
+import 'server_transport.dart';
 
-/// Callback invoked when a message or command is received for a shared connected peripheral.
+/// Callback invoked when a command message is received for a peripheral.
 ///
 /// Returns a [SharedDeviceResponse], [Map], [bool], or any serializable value.
 typedef OnMessageReceivedCallback =
     FutureOr<dynamic> Function(String deviceId, dynamic message);
 
-/// Backward-compatibility alias for [OnMessageReceivedCallback].
-typedef OnDataReceivedCallback = OnMessageReceivedCallback;
 
-/// A lightweight, high-performance UDP server running on a host device that shares
-/// local connected peripherals (e.g. Bluetooth printers, USB barcode scanners, cash drawers)
-/// across the local network.
+/// Callback invoked when binary data (e.g. image, PDF, raw bytes) is received for a peripheral.
+typedef OnBinaryReceivedCallback =
+    FutureOr<dynamic> Function(
+      String deviceId,
+      List<int> bytes, {
+      required String contentType,
+      String? fileName,
+      String? requestId,
+    });
+
+/// A high-performance local network server that hosts and shares connected hardware peripherals
+/// (e.g. receipt printers, barcode scanners, cash drawers, scales) over HTTP with mDNS discovery.
 ///
-/// ### Quick Start:
-/// ```dart
-/// final server = SharedDeviceNetworkServer();
-///
-/// server.onMessageReceived((deviceId, message) async {
-///   print('Received command for device $deviceId: $message');
-///
-///   if (deviceId == 'printer-bt-01') {
-///     // Forward print bytes to Bluetooth printer...
-///     return SharedDeviceResponse.success(message: 'Receipt printed successfully');
-///   } else if (deviceId == 'scanner-usb-01') {
-///     // Trigger barcode scan...
-///     return SharedDeviceResponse.success(
-///       message: 'Scan triggered',
-///       data: {'barcode': '890123456789'},
-///     );
-///   }
-///
-///   return SharedDeviceResponse.deviceNotFound();
-/// });
-///
-/// await server.start(port: 8888, discoveryPort: 8889);
-///
-/// await server.addDevice(
-///   'printer-bt-01',
-///   'Kitchen Bluetooth Printer',
-///   deviceDescription: 'Thermal 80mm ESC/POS printer',
-/// );
-///
-/// // await server.removeDevice('printer-bt-01');
-/// ```
+/// Native platforms (Android, iOS, macOS, Windows, Linux) can act as servers.
+/// Flutter Web cannot host a server and will throw [UnsupportedPlatformException] if start is attempted.
 class SharedDeviceNetworkServer {
-  int _port = 8888;
-  int _discoveryPort = 8889;
+  /// Protocol version exposed by this server.
+  final String protocolVersion;
 
-  /// UDP data port for receiving messages and sending ACKs (default: 8888).
-  int get port => _port;
+  /// Configurable CORS policy for web browser clients.
+  final CorsPolicy corsPolicy;
 
-  /// UDP discovery port for listening to client broadcast discovery (default: 8889).
-  int get discoveryPort => _discoveryPort;
+  /// Optional TLS/SSL SecurityContext for HTTPS operation.
+  final dynamic securityContext;
 
+  /// Maximum permitted request body size in bytes (default: 50MB).
+  final int maxBodySizeBytes;
+
+  /// Extra metadata advertised in mDNS and returned in `/api/v1/info`.
+  final Map<String, dynamic> metadata;
+
+  final Map<String, SharedDeviceRecord> _devices = {};
+  final IdempotencyManager _idempotencyManager;
+  final ServerTransport _transport;
+  final DiscoveryProvider _discovery;
+
+  DateTime? _startedAt;
   OnMessageReceivedCallback? _onMessageReceived;
+  OnBinaryReceivedCallback? _onBinaryReceived;
 
-  /// Registers the callback invoked when a message or command is received for a shared connected peripheral.
+  SharedDeviceNetworkServer({
+    @Deprecated('No longer used.') String? serverId,
+    @Deprecated('No longer used.') String? serverName,
+    this.protocolVersion = '1.0',
+    CorsPolicy? corsPolicy,
+    this.securityContext,
+    this.maxBodySizeBytes = 50 * 1024 * 1024, // 50 MB
+    Duration idempotencyTtl = const Duration(minutes: 5),
+    int idempotencyCapacity = 1000,
+    Map<String, dynamic>? metadata,
+    OnMessageReceivedCallback? onMessageReceived,
+    OnBinaryReceivedCallback? onBinaryReceived,
+    ServerTransport? transport,
+    DiscoveryProvider? discovery,
+  })  : corsPolicy = corsPolicy ?? const CorsPolicy(),
+        metadata = metadata != null ? Map<String, dynamic>.from(metadata) : {},
+        _onMessageReceived = onMessageReceived,
+        _onBinaryReceived = onBinaryReceived,
+        _idempotencyManager = IdempotencyManager(
+          ttl: idempotencyTtl,
+          maxCapacity: idempotencyCapacity,
+        ),
+        _transport = transport ?? getServerTransport(),
+        _discovery = discovery ?? getDiscoveryProvider();
+
+  // ---------------------------------------------------------------------------
+  // Getters & Properties
+  // ---------------------------------------------------------------------------
+
+  /// Whether the HTTP server is currently running.
+  bool get isRunning => _transport.isRunning;
+
+  /// Active listening HTTP port.
+  int? get port => _transport.port;
+
+  /// Standard mDNS discovery port (5353) or configured port (backward compatibility getter).
+  int get discoveryPort => _discoveryPort ?? 5353;
+  int? _discoveryPort;
+
+  /// Bound host address.
+  String? get host => _transport.host;
+
+  /// List of registered shared devices.
+  List<SharedDeviceRecord> get devices => List.unmodifiable(_devices.values);
+
+  /// Number of registered devices on this server.
+  int get deviceCount => _devices.length;
+
+  /// Server uptime in seconds, or 0 if not running.
+  int get uptimeSeconds => _startedAt == null
+      ? 0
+      : DateTime.now().difference(_startedAt!).inSeconds;
+
+  // ---------------------------------------------------------------------------
+  // Callbacks
+  // ---------------------------------------------------------------------------
+
+  /// Registers the callback for command requests.
   void onMessageReceived(OnMessageReceivedCallback callback) {
     _onMessageReceived = callback;
   }
@@ -72,55 +121,22 @@ class SharedDeviceNetworkServer {
   void onDataReceived(OnMessageReceivedCallback callback) =>
       onMessageReceived(callback);
 
-  RawDatagramSocket? _dataSocket;
-  RawDatagramSocket? _discoverySocket;
-  bool _isRunning = false;
-
-  /// Map of shared connected devices hosted on this server, keyed by deviceId.
-  final Map<String, SharedDeviceRecord> _devices = {};
-
-  /// Controller for broadcasting received network packets to internal listeners.
-  final StreamController<NetworkPacket> _messageStreamController =
-      StreamController<NetworkPacket>.broadcast();
-
-  /// Creates a new [SharedDeviceNetworkServer] instance.
-  ///
-  /// Optionally accepts an initial [onMessageReceived] callback, or register
-  /// it dynamically using [onMessageReceived(callback)].
-  SharedDeviceNetworkServer({OnMessageReceivedCallback? onMessageReceived}) {
-    if (onMessageReceived != null) {
-      _onMessageReceived = onMessageReceived;
-    }
+  /// Registers the callback for binary/multipart uploads.
+  void onBinaryReceived(OnBinaryReceivedCallback callback) {
+    _onBinaryReceived = callback;
   }
-
-  // ---------------------------------------------------------------------------
-  // Instance Properties & Getters
-  // ---------------------------------------------------------------------------
-
-  /// Whether the UDP server is currently running and listening on sockets.
-  bool get isRunning => _isRunning;
-
-  /// List of currently registered shared connected devices.
-  List<SharedDeviceRecord> get devices => List.unmodifiable(_devices.values);
-
-  /// Total count of shared connected devices hosted on this server.
-  int get deviceCount => _devices.length;
-
-  /// Stream of incoming valid packets.
-  Stream<NetworkPacket> get messageStream => _messageStreamController.stream;
 
   // ---------------------------------------------------------------------------
   // Device Management
   // ---------------------------------------------------------------------------
 
-  /// Adds a shared connected device to this server.
-  ///
-  /// Throws [ArgumentError] if [deviceId] is empty or already exists.
+  /// Adds a shared connected peripheral to this server.
   Future<void> addDevice(
     String deviceId,
     String deviceName, {
     String? deviceDescription,
     String? pairKey,
+    List<String> capabilities = const [],
     Map<String, dynamic>? metadata,
   }) async {
     final trimmedId = deviceId.trim();
@@ -128,7 +144,7 @@ class SharedDeviceNetworkServer {
       throw ArgumentError('Device ID cannot be empty');
     }
     if (_devices.containsKey(trimmedId)) {
-      throw ArgumentError('Device ID $trimmedId already exists');
+      throw ArgumentError('Device ID "$trimmedId" already exists on this server');
     }
 
     _devices[trimmedId] = SharedDeviceRecord(
@@ -136,12 +152,13 @@ class SharedDeviceNetworkServer {
       deviceName: deviceName.trim(),
       deviceDescription: deviceDescription?.trim(),
       pairKey: pairKey,
+      capabilities: capabilities,
       metadata: metadata,
       addedAt: DateTime.now(),
     );
   }
 
-  /// Removes a shared connected device from this server.
+  /// Removes a peripheral from this server.
   Future<void> removeDevice(String deviceId) async {
     final trimmedId = deviceId.trim();
     _devices.remove(trimmedId);
@@ -150,316 +167,270 @@ class SharedDeviceNetworkServer {
   /// Checks if a device ID is hosted on this server.
   bool hasDevice(String deviceId) => _devices.containsKey(deviceId.trim());
 
-  /// Retrieves a registered shared device record.
+  /// Retrieves a registered device record.
   SharedDeviceRecord? getDevice(String deviceId) => _devices[deviceId.trim()];
 
   // ---------------------------------------------------------------------------
-  // Socket Lifecycle
+  // Lifecycle
   // ---------------------------------------------------------------------------
 
-  /// Starts listening for UDP discovery and data messages.
+  /// Starts the HTTP server and advertises it on the LAN via mDNS/DNS-SD.
   ///
-  /// [port] is the UDP data port (default: 8888).
-  /// [discoveryPort] is the UDP discovery broadcast port (default: 8889).
-  /// Also accepts [discoverPort] as an alias.
+  /// [port] is the HTTP listening port (default: 8080, use 0 for system-assigned).
+  /// [host] is the address to bind (default: '0.0.0.0' for all IPv4 interfaces).
+  /// [advertise] whether to advertise this server via mDNS (default: true).
+  /// [serviceType] the mDNS service type (default: `_shared-device._tcp`).
   Future<void> start({
-    int port = 8888,
+    int port = 8080,
+    String host = '0.0.0.0',
+    bool advertise = true,
+    String serviceType = kDefaultServiceType,
     int? discoveryPort,
     int? discoverPort,
   }) async {
-    if (_isRunning) return;
+    _discoveryPort = discoveryPort ?? discoverPort;
+    if (_transport.isRunning) {
+      return;
+    }
 
-    _port = port;
-    _discoveryPort = discoveryPort ?? discoverPort ?? 8889;
+    // 1. Start HTTP transport
+    await _transport.start(
+      host: host,
+      port: port,
+      corsPolicy: corsPolicy,
+      maxBodySizeBytes: maxBodySizeBytes,
+      onInfo: _handleGetInfo,
+      onDevices: _handleGetDevices,
+      onDeviceLookup: _handleGetDeviceLookup,
+      onCommand: _handleIncomingCommand,
+      onBinary: _handleIncomingBinary,
+      securityContext: securityContext,
+    );
 
-    try {
-      // 1. Bind main data socket
-      _dataSocket = await RawDatagramSocket.bind(
-        InternetAddress.anyIPv4,
-        _port,
-        reuseAddress: true,
-        reusePort: Platform.isIOS || Platform.isMacOS,
-      );
-      _dataSocket!.broadcastEnabled = true;
-      _dataSocket!.listen(_handleDataSocketEvent);
+    _startedAt = DateTime.now();
+    final actualPort = _transport.port ?? port;
 
-      // 2. Bind discovery socket (if discoveryPort is different from data port)
-      if (_discoveryPort != _port) {
-        _discoverySocket = await RawDatagramSocket.bind(
-          InternetAddress.anyIPv4,
-          _discoveryPort,
-          reuseAddress: true,
-          reusePort: Platform.isIOS || Platform.isMacOS,
+    // 2. Start mDNS advertisement if enabled and supported
+    if (advertise && _discovery.isSupported) {
+      try {
+        final caps = <String>{};
+        for (final d in _devices.values) {
+          caps.addAll(d.capabilities);
+        }
+
+        final mDnsMeta = <String, String>{};
+        metadata.forEach((k, v) {
+          if (v != null) mDnsMeta[k] = v.toString();
+        });
+
+        await _discovery.startBroadcast(
+          serviceType: serviceType,
+          port: actualPort,
+          protocolVersion: protocolVersion,
+          capabilities: caps.toList(),
+          metadata: mDnsMeta,
         );
-        _discoverySocket!.broadcastEnabled = true;
-        _discoverySocket!.listen(_handleDiscoverySocketEvent);
-      }
-
-      _isRunning = true;
-    } catch (e) {
-      await stop();
-      rethrow;
+      } catch (_) {}
     }
   }
 
-  /// Stops the server and closes all active sockets.
+  /// Stops the HTTP server and unregisters mDNS advertisement.
   Future<void> stop() async {
-    _isRunning = false;
+    _startedAt = null;
+    try {
+      await _discovery.stopBroadcast();
+    } catch (_) {}
 
     try {
-      _dataSocket?.close();
+      await _transport.stop();
     } catch (_) {}
-    _dataSocket = null;
-
-    try {
-      _discoverySocket?.close();
-    } catch (_) {}
-    _discoverySocket = null;
   }
 
-  /// Disposes resources, stops listening, and closes streams.
+  /// Disposes resources, clears devices and cached responses.
   Future<void> dispose() async {
     await stop();
     _devices.clear();
-    await _messageStreamController.close();
+    _idempotencyManager.clear();
+    await _discovery.dispose();
+    await _transport.dispose();
   }
 
   // ---------------------------------------------------------------------------
-  // Socket Event & Packet Handling
+  // Internal Request Handlers
   // ---------------------------------------------------------------------------
 
-  void _handleDataSocketEvent(RawSocketEvent event) {
-    if (event == RawSocketEvent.read && _dataSocket != null) {
-      final datagram = _dataSocket!.receive();
-      if (datagram != null) {
-        _processIncomingDatagram(datagram, _dataSocket!);
-      }
+  Map<String, dynamic> _handleGetInfo() {
+    final caps = <String>{};
+    for (final d in _devices.values) {
+      caps.addAll(d.capabilities);
     }
+
+    return {
+      'protocolVersion': protocolVersion,
+      'port': _transport.port,
+      'deviceCount': _devices.length,
+      'uptimeSeconds': uptimeSeconds,
+      'capabilities': caps.toList(),
+      'metadata': metadata,
+    };
   }
 
-  void _handleDiscoverySocketEvent(RawSocketEvent event) {
-    if (event == RawSocketEvent.read && _discoverySocket != null) {
-      final datagram = _discoverySocket!.receive();
-      if (datagram != null) {
-        _processIncomingDatagram(datagram, _discoverySocket!);
-      }
-    }
+  List<Map<String, dynamic>> _handleGetDevices() {
+    final hostIp = _transport.host ?? '127.0.0.1';
+    final portNum = _transport.port ?? 8080;
+
+    return _devices.values
+        .map(
+          (record) => record
+              .toPublicDevice(
+                host: hostIp,
+                port: portNum,
+              )
+              .toMap(),
+        )
+        .toList();
   }
 
-  Future<void> _processIncomingDatagram(
-    Datagram datagram,
-    RawDatagramSocket sourceSocket,
+  Map<String, dynamic>? _handleGetDeviceLookup(String deviceId) {
+    final record = _devices[deviceId];
+    if (record == null) return null;
+
+    final hostIp = _transport.host ?? '127.0.0.1';
+    final portNum = _transport.port ?? 8080;
+
+    return record
+        .toPublicDevice(
+          host: hostIp,
+          port: portNum,
+        )
+        .toMap();
+  }
+
+  Future<SharedDeviceResponse> _handleIncomingCommand(
+    String deviceId,
+    SharedDeviceRequest request,
+    String? authHeader,
   ) async {
-    final senderIp = datagram.address.address;
-    final senderPort = datagram.port;
-
-    final packet = NetworkPacket.fromUtf8Bytes(
-      datagram.data,
-      senderIp: senderIp,
-      senderPort: senderPort,
-    );
-
-    if (packet == null) return;
-
-    switch (packet.type) {
-      case PacketType.discoveryRequest:
-        await _handleDiscoveryRequest(packet, datagram.address, senderPort);
-        break;
-
-      case PacketType.message:
-        await _handleMessage(packet, datagram.address, senderPort);
-        break;
-
-      case PacketType.ack:
-        _messageStreamController.add(packet);
-        break;
-
-      case PacketType.discoveryResponse:
-        break;
-    }
-  }
-
-  /// Responds to client discovery request with all active shared peripherals on this server.
-  Future<void> _handleDiscoveryRequest(
-    NetworkPacket packet,
-    InternetAddress remoteAddress,
-    int remotePort,
-  ) async {
-    if (_devices.isEmpty) return;
-
-    final localIp = await NetworkUtils.getPrimaryLocalIPv4();
-    final replyPort = packet.senderPort != null && packet.senderPort! > 0
-        ? packet.senderPort!
-        : remotePort;
-
-    final targetedId = packet.targetDeviceId;
-    final List<Map<String, dynamic>> devicesToAnnounce = [];
-
-    if (targetedId != null && targetedId.isNotEmpty) {
-      final single = _devices[targetedId];
-      if (single != null) {
-        devicesToAnnounce.add(
-          SharedDevice(
-            deviceId: single.deviceId,
-            deviceName: single.deviceName,
-            deviceDescription: single.deviceDescription,
-            deviceIp: localIp,
-            devicePort: port,
-            metadata: single.metadata,
-          ).toMap(),
-        );
-      }
-    } else {
-      for (final dev in _devices.values) {
-        devicesToAnnounce.add(
-          SharedDevice(
-            deviceId: dev.deviceId,
-            deviceName: dev.deviceName,
-            deviceDescription: dev.deviceDescription,
-            deviceIp: localIp,
-            devicePort: port,
-            metadata: dev.metadata,
-          ).toMap(),
-        );
-      }
-    }
-
-    if (devicesToAnnounce.isEmpty) return;
-
-    final response = NetworkPacket(
-      type: PacketType.discoveryResponse,
-      senderDeviceId: 'server-host',
-      payload: {'devices': devicesToAnnounce},
-    );
-
-    _sendPacketDirect(response, remoteAddress, replyPort);
-  }
-
-  /// Handles incoming data message, routes it to target peripheral, and sends back ACK.
-  Future<void> _handleMessage(
-    NetworkPacket packet,
-    InternetAddress remoteAddress,
-    int remotePort,
-  ) async {
-    final messageId = packet.messageId;
-    final targetId = packet.targetDeviceId;
-    final senderId = packet.senderDeviceId;
-
-    if (messageId == null) return;
-
-    final replyPort = packet.senderPort != null && packet.senderPort! > 0
-        ? packet.senderPort!
-        : remotePort;
-
-    SharedDeviceRecord? matchedDevice;
-
-    if (targetId != null && targetId.isNotEmpty) {
-      matchedDevice = _devices[targetId];
-      if (matchedDevice == null) {
-        final notFoundStatus = SharedDeviceResponse.deviceNotFound(
-          message: 'Device "$targetId" is not hosted on this server.',
-        );
-        _sendAck(messageId, senderId, notFoundStatus, remoteAddress, replyPort);
-        return;
-      }
-    } else if (_devices.length == 1) {
-      matchedDevice = _devices.values.first;
-    } else if (_devices.isEmpty) {
-      final notFoundStatus = SharedDeviceResponse.deviceNotFound(
-        message: 'No shared devices currently registered on this server.',
+    final device = _devices[deviceId];
+    if (device == null) {
+      return SharedDeviceResponse.deviceNotFound(
+        requestId: request.requestId,
+        message: 'Device "$deviceId" not found on this server',
       );
-      _sendAck(messageId, senderId, notFoundStatus, remoteAddress, replyPort);
-      return;
-    } else {
-      final badStatus = SharedDeviceResponse.badRequest(
-        message:
-            'Multiple devices hosted. Please specify targetDeviceId in message.',
+    }
+
+    // Verify pairKey authentication if required
+    if (!_validatePairKey(device, authHeader)) {
+      return SharedDeviceResponse.unauthorized(
+        requestId: request.requestId,
+        message: 'Invalid or missing pair key for device "$deviceId"',
       );
-      _sendAck(messageId, senderId, badStatus, remoteAddress, replyPort);
-      return;
     }
 
-    // Verify pairKey if configured for this specific peripheral
-    if (matchedDevice.pairKey != null && matchedDevice.pairKey!.isNotEmpty) {
-      if (packet.pairKey != matchedDevice.pairKey) {
-        final unauthStatus = SharedDeviceResponse.unauthorized(
-          message:
-              'Invalid pair key provided for shared device "${matchedDevice.deviceId}".',
+    // Execute with idempotency tracking
+    return await _idempotencyManager.handleRequest(request.requestId, () async {
+      final handler = _onMessageReceived;
+      if (handler == null) {
+        return SharedDeviceResponse.deviceNotFound(
+          requestId: request.requestId,
+          message: 'No message handler registered on server',
         );
-        _sendAck(messageId, senderId, unauthStatus, remoteAddress, replyPort);
-        return;
       }
-    }
 
-    _messageStreamController.add(packet);
-
-    // Call onMessageReceived callback if registered
-    SharedDeviceResponse response;
-    final handler = _onMessageReceived;
-    if (handler != null) {
       try {
-        final result = await handler(matchedDevice.deviceId, packet.payload);
-
-        if (result is SharedDeviceResponse) {
-          response = result;
-        } else if (result is Map<String, dynamic>) {
-          response = SharedDeviceResponse.success(data: result);
-        } else if (result is bool) {
-          response = result
-              ? SharedDeviceResponse.success()
-              : SharedDeviceResponse.error('Operation returned false');
-        } else if (result == null) {
-          response = SharedDeviceResponse.success();
-        } else {
-          response = SharedDeviceResponse.success(data: result);
-        }
+        final result = await handler(deviceId, request.data);
+        return _normalizeResponse(result, requestId: request.requestId);
       } catch (e) {
-        response = SharedDeviceResponse.error(
+        return SharedDeviceResponse.error(
           e.toString(),
-          message:
-              'Exception occurred processing message for device "${matchedDevice.deviceId}"',
+          requestId: request.requestId,
+          message: 'Exception occurred processing command for device "$deviceId"',
         );
       }
-    } else {
-      response = SharedDeviceResponse.deviceNotFound(
-        message: 'No message handler registered on server.',
+    });
+  }
+
+  Future<SharedDeviceResponse> _handleIncomingBinary(
+    String deviceId,
+    List<int> bytes, {
+    required String contentType,
+    String? fileName,
+    String? requestId,
+    String? authHeader,
+  }) async {
+    final device = _devices[deviceId];
+    if (device == null) {
+      return SharedDeviceResponse.deviceNotFound(
+        requestId: requestId,
+        message: 'Device "$deviceId" not found on this server',
       );
     }
 
-    // Send ACK back to sender
-    _sendAck(messageId, senderId, response, remoteAddress, replyPort);
-  }
+    if (!_validatePairKey(device, authHeader)) {
+      return SharedDeviceResponse.unauthorized(
+        requestId: requestId,
+        message: 'Invalid or missing pair key for device "$deviceId"',
+      );
+    }
 
-  /// Sends an ACK packet back to sender.
-  void _sendAck(
-    int messageId,
-    String targetDeviceId,
-    SharedDeviceResponse status,
-    InternetAddress remoteAddress,
-    int remotePort,
-  ) {
-    final ackPacket = NetworkPacket.ack(
-      messageId: messageId,
-      senderDeviceId: 'server-host',
-      targetDeviceId: targetDeviceId,
-      status: status,
-    );
-
-    _sendPacketDirect(ackPacket, remoteAddress, remotePort);
-  }
-
-  /// Sends a packet directly to destination IP and port.
-  void _sendPacketDirect(
-    NetworkPacket packet,
-    InternetAddress destinationAddress,
-    int destinationPort,
-  ) {
-    try {
-      final bytes = packet.toUtf8Bytes();
-      final socket = _dataSocket ?? _discoverySocket;
-      if (socket != null) {
-        socket.send(bytes, destinationAddress, destinationPort);
+    return await _idempotencyManager.handleRequest(requestId, () async {
+      final handler = _onBinaryReceived;
+      if (handler == null) {
+        return SharedDeviceResponse.deviceNotFound(
+          requestId: requestId,
+          message: 'No binary handler registered on server',
+        );
       }
-    } catch (_) {}
+
+      try {
+        final result = await handler(
+          deviceId,
+          bytes,
+          contentType: contentType,
+          fileName: fileName,
+          requestId: requestId,
+        );
+        return _normalizeResponse(result, requestId: requestId);
+      } catch (e) {
+        return SharedDeviceResponse.error(
+          e.toString(),
+          requestId: requestId,
+          message: 'Exception occurred processing binary for device "$deviceId"',
+        );
+      }
+    });
+  }
+
+  bool _validatePairKey(SharedDeviceRecord device, String? authHeader) {
+    if (!device.isSecured) return true;
+    if (authHeader == null || authHeader.isEmpty) return false;
+
+    var token = authHeader.trim();
+    if (token.startsWith('Bearer ') || token.startsWith('bearer ')) {
+      token = token.substring(7).trim();
+    }
+
+    return token == device.pairKey;
+  }
+
+  SharedDeviceResponse _normalizeResponse(dynamic result, {String? requestId}) {
+    if (result is SharedDeviceResponse) {
+      return result.requestId == null && requestId != null
+          ? result.copyWith(requestId: requestId)
+          : result;
+    } else if (result is Map<String, dynamic>) {
+      return SharedDeviceResponse.success(requestId: requestId, data: result);
+    } else if (result is bool) {
+      return result
+          ? SharedDeviceResponse.success(requestId: requestId)
+          : SharedDeviceResponse.error(
+              'Operation returned false',
+              requestId: requestId,
+            );
+    } else if (result == null) {
+      return SharedDeviceResponse.success(requestId: requestId);
+    } else {
+      return SharedDeviceResponse.success(requestId: requestId, data: result);
+    }
   }
 }

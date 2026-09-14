@@ -1,58 +1,115 @@
 import 'dart:async';
-import 'dart:io';
 
-import '../models/network_packet.dart';
+import '../discovery/discovery_provider.dart';
+import '../models/exceptions.dart';
 import '../models/shared_device.dart';
+import '../models/shared_device_request.dart';
 import '../models/shared_device_response.dart';
-import '../utils/message_id_generator.dart';
-import '../utils/network_utils.dart';
+import '../models/shared_device_server.dart';
+import '../utils/request_id_generator.dart';
+import 'http_client_transport.dart';
 
-/// A UDP client that enables local device discovery and incremental ACK-based message transmission.
+/// A versatile client for local device discovery and HTTP-based peripheral communication.
+///
+/// Fully cross-platform: runs on Android, iOS, macOS, Windows, Linux, and Flutter Web.
+///
+/// ### Example Usage:
+/// ```dart
+/// final client = SharedDeviceNetworkClient();
+///
+/// // 1. Discover devices on local network via mDNS:
+/// final devices = await client.discoverDevicesOnce();
+/// for (final dev in devices) {
+///   print('Found ${dev.deviceName} (${dev.deviceId}) at ${dev.deviceIp}:${dev.devicePort}');
+/// }
+///
+/// // 2. Send command to a device:
+/// final res = await client.sendToDevice('printer-01', {
+///   'command': 'PRINT_BILL',
+///   'total': 45.50,
+/// });
+/// ```
 class SharedDeviceNetworkClient {
-  /// Identifier of this client device.
-  final String deviceId;
+  /// Identifier of this client instance.
+  final String clientId;
 
   /// Human-readable name of this client device.
-  final String deviceName;
+  final String clientName;
 
-  /// Default timeout waiting for an ACK.
+  /// Default timeout waiting for HTTP responses.
   final Duration defaultTimeout;
 
-  /// UDP port used for broadcasting discovery requests.
-  final int discoveryPort;
+  /// Default mDNS service type to discover (default: `_shared-device._tcp`).
+  final String defaultServiceType;
 
-  /// Default server data port if target port is unknown.
-  final int defaultServerPort;
+  final HttpClientTransport _transport;
+  final DiscoveryProvider _discovery;
 
-  /// Optional fixed local port for client socket (0 = system assigned).
-  final int clientPort;
+  /// Currently selected target server (if any).
+  SharedDeviceServer? _currentServer;
 
-  /// Thread-safe generator for incremental message IDs.
-  final MessageIdGenerator _idGenerator = MessageIdGenerator();
+  /// Cache of discovered or registered servers, keyed by serverId.
+  final Map<String, SharedDeviceServer> _knownServers = {};
 
-  /// Socket used for data communication and ACK receiving.
-  RawDatagramSocket? _socket;
-  bool _isInitialized = false;
-
-  /// Pending ACK completers keyed by incremental messageId.
-  final Map<int, Completer<SharedDeviceResponse>> _pendingAcks = {};
-
-  /// Cache of discovered devices keyed by deviceId.
+  /// Cache of discovered or registered devices, keyed by deviceId.
   final Map<String, SharedDevice> _knownDevices = {};
 
   SharedDeviceNetworkClient({
-    this.deviceId = '',
-    this.deviceName = 'SharedDeviceClient',
-    this.defaultTimeout = const Duration(seconds: 5),
-    this.discoveryPort = 8889,
-    this.defaultServerPort = 8888,
-    this.clientPort = 0,
-  });
+    String? clientId,
+    String? deviceId,
+    String? deviceName,
+    this.clientName = 'SharedDeviceClient',
+    this.defaultTimeout = const Duration(seconds: 8),
+    this.defaultServiceType = kDefaultServiceType,
+    this.discoveryPort = 5353,
+    this.defaultServerPort = 8080,
+    int clientPort = 0,
+    HttpClientTransport? transport,
+    DiscoveryProvider? discovery,
+  })  : clientId = clientId ?? deviceId ?? 'client_${RequestIdGenerator.generate().substring(4)}',
+        _transport = transport ?? HttpClientTransport(defaultTimeout: defaultTimeout),
+        _discovery = discovery ?? getDiscoveryProvider();
 
-  /// Map of known devices discovered or registered.
+  // ---------------------------------------------------------------------------
+  // Getters & State
+  // ---------------------------------------------------------------------------
+
+  /// Identifier of this client device (backward-compatibility alias for [clientId]).
+  String get deviceId => clientId;
+
+  /// Human-readable name of this client device (backward-compatibility alias for [clientName]).
+  String get deviceName => clientName;
+
+  /// Default discovery port (backward-compatibility getter).
+  final int discoveryPort;
+
+  /// Default server port (backward-compatibility getter).
+  final int defaultServerPort;
+
+  /// The currently selected server, if any.
+  SharedDeviceServer? get currentServer => _currentServer;
+
+  /// Whether native mDNS local network discovery is supported on this platform.
+  /// (False on Flutter Web).
+  bool get isDiscoverySupported => _discovery.isSupported;
+
+  /// Map of known devices, keyed by deviceId.
   Map<String, SharedDevice> get knownDevices => Map.unmodifiable(_knownDevices);
 
-  /// Registers or manually updates a known device in the cache.
+  /// List of currently discovered or known peripheral devices.
+  List<SharedDevice> get discoveredDevices => _knownDevices.values.toList();
+
+  /// Map of known servers, keyed by serverId.
+  Map<String, SharedDeviceServer> get knownServers =>
+      Map.unmodifiable(_knownServers);
+
+  /// Explicitly selects the active server for subsequent device queries and commands.
+  void selectServer(SharedDeviceServer server) {
+    _currentServer = server;
+    _knownServers[server.serverId] = server;
+  }
+
+  /// Manually registers a known device in the cache.
   void registerKnownDevice(SharedDevice device) {
     _knownDevices[device.deviceId] = device;
   }
@@ -62,319 +119,485 @@ class SharedDeviceNetworkClient {
     _knownDevices.clear();
   }
 
-  /// Initializes the client socket if not already open.
-  Future<void> _ensureSocket() async {
-    if (_isInitialized && _socket != null) return;
-
-    _socket = await RawDatagramSocket.bind(
-      InternetAddress.anyIPv4,
-      clientPort,
-      reuseAddress: true,
-      reusePort: !Platform.isWindows,
-    );
-    _socket!.broadcastEnabled = true;
-    _socket!.listen(_handleSocketEvents);
-    _isInitialized = true;
+  /// Clears the known servers cache.
+  void clearKnownServers() {
+    _knownServers.clear();
+    _currentServer = null;
   }
 
-  /// Handles incoming datagrams (e.g. ACKs and Discovery Responses).
-  void _handleSocketEvents(RawSocketEvent event) {
-    if (event == RawSocketEvent.read && _socket != null) {
-      final datagram = _socket!.receive();
-      if (datagram != null) {
-        final senderIp = datagram.address.address;
-        final senderPort = datagram.port;
+  // ---------------------------------------------------------------------------
+  // Device Discovery (mDNS + REST)
+  // ---------------------------------------------------------------------------
 
-        final packet = NetworkPacket.fromUtf8Bytes(
-          datagram.data,
-          senderIp: senderIp,
-          senderPort: senderPort,
-        );
-
-        if (packet == null) return;
-
-        if (packet.type == PacketType.ack && packet.messageId != null) {
-          _handleAck(packet);
-        } else if (packet.type == PacketType.discoveryResponse) {
-          _handleDiscoveryResponse(packet, senderIp, senderPort);
-        }
-      }
-    }
-  }
-
-  /// Handles an ACK packet by completing the matching pending Completer.
-  void _handleAck(NetworkPacket packet) {
-    final messageId = packet.messageId!;
-    final completer = _pendingAcks.remove(messageId);
-    if (completer != null && !completer.isCompleted) {
-      final status =
-          packet.status ??
-          (packet.payload is Map
-              ? SharedDeviceResponse.fromMap(
-                  Map<String, dynamic>.from(packet.payload as Map),
-                )
-              : SharedDeviceResponse.success(data: packet.payload));
-      completer.complete(status);
-    }
-  }
-
-  /// Handles a discovery response and caches the devices.
-  void _handleDiscoveryResponse(
-    NetworkPacket packet,
-    String senderIp,
-    int senderPort,
-  ) {
-    if (packet.payload is Map) {
-      final map = Map<String, dynamic>.from(packet.payload as Map);
-      if (map['devices'] is List) {
-        for (final item in (map['devices'] as List)) {
-          if (item is Map) {
-            try {
-              final device = SharedDevice.fromMap(
-                Map<String, dynamic>.from(item),
-              );
-              final resolvedDevice =
-                  device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
-                  ? device.copyWith(deviceIp: senderIp)
-                  : device;
-              _knownDevices[resolvedDevice.deviceId] = resolvedDevice;
-            } catch (_) {}
-          }
-        }
-      } else {
-        try {
-          final device = SharedDevice.fromMap(map);
-          final resolvedDevice =
-              device.deviceIp.isEmpty || device.deviceIp == '0.0.0.0'
-              ? device.copyWith(deviceIp: senderIp)
-              : device;
-          _knownDevices[resolvedDevice.deviceId] = resolvedDevice;
-        } catch (_) {}
-      }
-    }
-  }
-
-  /// Discovers available devices on the local network via UDP broadcast.
+  /// Discovers peripheral devices on the local LAN advertising via mDNS.
   ///
-  /// Listens for responses for the specified [timeout] (default 3 seconds).
+  /// Discovers host servers on the network in the background, queries their registered
+  /// peripherals via `GET /api/v1/devices`, tags each peripheral with the hosting server's
+  /// IP address and port ([SharedDevice.deviceIp], [SharedDevice.devicePort]), and emits
+  /// [SharedDevice] instances.
   Stream<SharedDevice> discoverDevices({
-    Duration timeout = const Duration(seconds: 3),
-    int? discoveryPort,
+    Duration timeout = const Duration(seconds: 4),
+    String? serviceType,
   }) {
-    final targetDiscoveryPort = discoveryPort ?? this.discoveryPort;
     late StreamController<SharedDevice> controller;
-    final discoveredIds = <String>{};
-    RawDatagramSocket? discSocket;
-    Timer? timer;
-
-    void cleanup() {
-      timer?.cancel();
-      try {
-        discSocket?.close();
-      } catch (_) {}
-      discSocket = null;
-    }
+    final yieldedDeviceKeys = <String>{};
 
     controller = StreamController<SharedDevice>(
       onListen: () async {
         try {
-          discSocket = await RawDatagramSocket.bind(
-            InternetAddress.anyIPv4,
-            0,
-            reuseAddress: true,
-            reusePort: !Platform.isWindows,
+          final serverStream = _discovery.discoverServers(
+            serviceType: serviceType ?? defaultServiceType,
+            timeout: timeout,
           );
-          discSocket!.broadcastEnabled = true;
 
-          discSocket!.listen((event) {
-            if (event == RawSocketEvent.read && discSocket != null) {
-              final datagram = discSocket!.receive();
-              if (datagram != null) {
-                final packet = NetworkPacket.fromUtf8Bytes(
-                  datagram.data,
-                  senderIp: datagram.address.address,
-                  senderPort: datagram.port,
-                );
+          await for (final host in serverStream) {
+            try {
+              final rawList = await _transport.getDevices(
+                host.baseUri,
+                timeout: const Duration(seconds: 2),
+              );
+              for (final map in rawList) {
+                try {
+                  final dev = SharedDevice.fromMap(map);
+                  // Ensure host's IP and port are tagged on the device
+                  final resolved = dev.copyWith(
+                    deviceIp: host.host,
+                    devicePort: host.port,
+                  );
+                  _knownDevices[resolved.deviceId] = resolved;
 
-                if (packet != null &&
-                    packet.type == PacketType.discoveryResponse) {
-                  if (packet.payload is Map) {
-                    final map = Map<String, dynamic>.from(
-                      packet.payload as Map,
-                    );
-                    final List<Map<String, dynamic>> rawDevices = [];
-                    if (map['devices'] is List) {
-                      for (final d in (map['devices'] as List)) {
-                        if (d is Map) {
-                          rawDevices.add(Map<String, dynamic>.from(d));
-                        }
-                      }
-                    } else if (map.containsKey('deviceId')) {
-                      rawDevices.add(map);
-                    }
-
-                    for (final raw in rawDevices) {
-                      try {
-                        final dev = SharedDevice.fromMap(raw);
-                        final resolved =
-                            dev.deviceIp.isEmpty || dev.deviceIp == '0.0.0.0'
-                            ? dev.copyWith(deviceIp: datagram.address.address)
-                            : dev;
-
-                        if (discoveredIds.add(resolved.deviceId)) {
-                          _knownDevices[resolved.deviceId] = resolved;
-                          if (!controller.isClosed) {
-                            controller.add(resolved);
-                          }
-                        }
-                      } catch (_) {}
+                  final key = '${resolved.deviceIp}:${resolved.devicePort}:${resolved.deviceId}';
+                  if (yieldedDeviceKeys.add(key)) {
+                    if (!controller.isClosed) {
+                      controller.add(resolved);
                     }
                   }
-                }
+                } catch (_) {}
               }
-            }
-          });
-
-          // Prepare discovery request packet
-          final request = NetworkPacket.discoveryRequest(
-            senderDeviceId: deviceId,
-            senderDeviceName: deviceName,
-            replyPort: discSocket!.port,
-          );
-          final bytes = request.toUtf8Bytes();
-
-          // Broadcast to all active subnet interfaces and universal 255.255.255.255
-          final broadcastAddresses = await NetworkUtils.getBroadcastAddresses();
-          for (final address in broadcastAddresses) {
-            try {
-              discSocket!.send(bytes, address, targetDiscoveryPort);
             } catch (_) {}
           }
 
-          // Also send directly on loopback for local tests/instances
-          try {
-            discSocket!.send(
-              bytes,
-              InternetAddress.loopbackIPv4,
-              targetDiscoveryPort,
-            );
-          } catch (_) {}
-
-          // Wait for timeout, then close
-          timer = Timer(timeout, () {
-            if (!controller.isClosed) {
-              cleanup();
-              controller.close();
-            }
-          });
+          if (!controller.isClosed) {
+            controller.close();
+          }
         } catch (e) {
           if (!controller.isClosed) {
-            cleanup();
             controller.addError(e);
             controller.close();
           }
         }
-      },
-      onCancel: () {
-        cleanup();
       },
     );
 
     return controller.stream;
   }
 
-  /// Discovers devices and returns a List of all responding [SharedDevice]s.
+  /// Discovers peripherals on the local network once and returns a List of all discovered [SharedDevice]s.
   Future<List<SharedDevice>> discoverDevicesOnce({
-    Duration timeout = const Duration(seconds: 3),
-    int? discoveryPort,
+    Duration timeout = const Duration(seconds: 4),
+    String? serviceType,
   }) async {
-    final devices = <SharedDevice>[];
-    await for (final device in discoverDevices(
+    final list = <SharedDevice>[];
+    await for (final dev in discoverDevices(
       timeout: timeout,
-      discoveryPort: discoveryPort,
+      serviceType: serviceType,
     )) {
-      devices.add(device);
+      list.add(dev);
     }
+    return list;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Direct Host & Server Queries (Native & Web)
+  // ---------------------------------------------------------------------------
+
+  /// Retrieves peripheral devices hosted on a specific [host] and [port].
+  ///
+  /// Each returned peripheral is tagged with [host] and [port].
+  /// Ideal for Flutter Web clients or direct network connection without mDNS.
+  Future<List<SharedDevice>> getDevicesFromHost({
+    required String host,
+    required int port,
+    bool isSecure = false,
+    Duration? timeout,
+  }) async {
+    final scheme = isSecure ? 'https' : 'http';
+    final baseUri = Uri(scheme: scheme, host: host, port: port);
+
+    final rawList = await _transport.getDevices(baseUri, timeout: timeout);
+    final devices = <SharedDevice>[];
+
+    for (final map in rawList) {
+      try {
+        final dev = SharedDevice.fromMap(map);
+        final resolved = dev.copyWith(
+          deviceIp: host,
+          devicePort: port,
+        );
+        _knownDevices[resolved.deviceId] = resolved;
+        devices.add(resolved);
+      } catch (_) {}
+    }
+
     return devices;
   }
 
-  /// Sends a message to a specific [deviceId] and waits for an acknowledgment (ACK).
+  /// Connects directly to a server by [host] and [port] without requiring mDNS.
   ///
-  /// Increments the message ID for this transmission.
-  /// If the target device's IP and port are known or supplied in [targetDevice]/[ip]/[port],
-  /// the message is sent directly. Otherwise, it attempts discovery to locate the device.
+  /// Queries server info, discovers hosted peripherals, and automatically selects it.
+  /// This is the primary mechanism for browser-based Flutter Web clients.
+  Future<SharedDeviceServer> connectToServer({
+    required String host,
+    required int port,
+    bool isSecure = false,
+    Duration? timeout,
+  }) async {
+    final scheme = isSecure ? 'https' : 'http';
+    final baseUri = Uri(scheme: scheme, host: host, port: port);
+
+    final info = await _transport.getInfo(baseUri, timeout: timeout);
+
+    final serverId = info['serverId']?.toString() ?? 'server_${host}_$port';
+    final serverName = info['serverName']?.toString() ?? 'Server ($host)';
+    final version = info['protocolVersion']?.toString() ?? '1.0';
+    final caps = info['capabilities'] is List
+        ? (info['capabilities'] as List).map((e) => e.toString()).toList()
+        : <String>[];
+    final metadata = info['metadata'] is Map
+        ? Map<String, dynamic>.from(info['metadata'] as Map)
+        : <String, dynamic>{};
+    final deviceCount = info['deviceCount'] is int
+        ? info['deviceCount'] as int
+        : null;
+
+    final server = SharedDeviceServer(
+      serverId: serverId,
+      serverName: serverName,
+      host: host,
+      port: port,
+      protocolVersion: version,
+      capabilities: caps,
+      metadata: metadata,
+      deviceCount: deviceCount,
+      isSecure: isSecure,
+    );
+
+    selectServer(server);
+    await getDevicesFromHost(host: host, port: port, isSecure: isSecure, timeout: timeout);
+    return server;
+  }
+
+  /// Retrieves server info from the [targetServer] or [currentServer].
+  Future<Map<String, dynamic>> getServerInfo({
+    SharedDeviceServer? targetServer,
+    Duration? timeout,
+  }) async {
+    final server = targetServer ?? _currentServer;
+    if (server == null) {
+      throw const ConnectionException(
+        'No server selected. Call connectToServer() or selectServer() first.',
+      );
+    }
+    return await _transport.getInfo(server.baseUri, timeout: timeout);
+  }
+
+  /// Discovers local servers on the LAN advertising via mDNS.
+  Stream<SharedDeviceServer> discoverServers({
+    Duration timeout = const Duration(seconds: 4),
+    bool excludeSelf = true,
+    String? serviceType,
+  }) {
+    final stream = _discovery.discoverServers(
+      serviceType: serviceType ?? defaultServiceType,
+      timeout: timeout,
+      excludeServerId: excludeSelf ? clientId : null,
+    );
+
+    return stream.map((server) {
+      _knownServers[server.serverId] = server;
+      return server;
+    });
+  }
+
+  /// Discovers local servers and returns a List of all discovered [SharedDeviceServer]s.
+  Future<List<SharedDeviceServer>> discoverServersOnce({
+    Duration timeout = const Duration(seconds: 4),
+    bool excludeSelf = true,
+    String? serviceType,
+  }) async {
+    final list = await _discovery.discoverServersOnce(
+      serviceType: serviceType ?? defaultServiceType,
+      timeout: timeout,
+      excludeServerId: excludeSelf ? clientId : null,
+    );
+
+    for (final s in list) {
+      _knownServers[s.serverId] = s;
+    }
+    return list;
+  }
+
+  /// Retrieves peripheral devices from a specific host or cache.
+  Future<List<SharedDevice>> getDevices({
+    String? host,
+    int? port,
+    SharedDeviceServer? targetServer,
+    Duration? timeout,
+  }) async {
+    if (host != null && port != null) {
+      return getDevicesFromHost(host: host, port: port, timeout: timeout);
+    }
+    if (targetServer != null) {
+      return getDevicesFromHost(
+        host: targetServer.host,
+        port: targetServer.port,
+        isSecure: targetServer.isSecure,
+        timeout: timeout,
+      );
+    }
+    if (_currentServer != null) {
+      return getDevicesFromHost(
+        host: _currentServer!.host,
+        port: _currentServer!.port,
+        isSecure: _currentServer!.isSecure,
+        timeout: timeout,
+      );
+    }
+    return _knownDevices.values.toList();
+  }
+
+  /// Looks up a specific peripheral device by [deviceId].
+  Future<SharedDevice?> getDevice(
+    String deviceId, {
+    String? host,
+    int? port,
+    SharedDeviceServer? targetServer,
+    Duration? timeout,
+  }) async {
+    if (host != null && port != null) {
+      final uri = Uri(scheme: 'http', host: host, port: port);
+      final raw = await _transport.getDevice(uri, deviceId, timeout: timeout);
+      if (raw == null) return null;
+      final dev = SharedDevice.fromMap(raw).copyWith(deviceIp: host, devicePort: port);
+      _knownDevices[dev.deviceId] = dev;
+      return dev;
+    }
+
+    if (_knownDevices.containsKey(deviceId)) {
+      return _knownDevices[deviceId];
+    }
+
+    if (_discovery.isSupported) {
+      final discovered = await discoverDevicesOnce(timeout: const Duration(seconds: 2));
+      return discovered.where((d) => d.deviceId == deviceId).firstOrNull;
+    }
+
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Command & Binary Transmission
+  // ---------------------------------------------------------------------------
+
+  /// Sends a command to a peripheral device and waits for a structured response.
+  ///
+  /// Supports [pairKey] for authentication if required by the peripheral.
+  /// Automatically resolves destination using the peripheral's tagged IP and port.
   Future<SharedDeviceResponse> sendToDevice(
     String deviceId,
     dynamic message, {
     String? pairKey,
     Duration? timeout,
     SharedDevice? targetDevice,
+    SharedDeviceServer? targetServer,
     String? ip,
     int? port,
+    String? requestId,
   }) async {
-    // 1. Resolve target device IP and Port
-    String? targetIp = ip ?? targetDevice?.deviceIp;
-    int? targetPort = port ?? targetDevice?.devicePort;
+    var baseUri = _resolveTargetUri(
+      deviceId: deviceId,
+      targetDevice: targetDevice,
+      targetServer: targetServer,
+      ip: ip,
+      port: port,
+    );
 
-    if (targetIp == null || targetPort == null) {
-      final cached = _knownDevices[deviceId];
-      if (cached != null) {
-        targetIp = cached.deviceIp;
-        targetPort = cached.devicePort;
-      }
+    // If still not resolved and discovery is supported, attempt quick discovery
+    if (baseUri == null && _discovery.isSupported) {
+      try {
+        final discovered = await discoverDevicesOnce(
+          timeout: const Duration(seconds: 2),
+        );
+        final match = discovered.where((d) => d.deviceId == deviceId).firstOrNull;
+        if (match != null && match.deviceIp.isNotEmpty && match.devicePort > 0) {
+          baseUri = Uri(scheme: 'http', host: match.deviceIp, port: match.devicePort);
+        }
+      } catch (_) {}
     }
 
-    // 2. If still unknown, attempt quick discovery
-    if (targetIp == null || targetPort == null) {
-      final discoveredList = await discoverDevicesOnce(
-        timeout: const Duration(milliseconds: 1500),
-      );
-      final found = discoveredList
-          .where((d) => d.deviceId == deviceId)
-          .firstOrNull;
-      if (found != null) {
-        targetIp = found.deviceIp;
-        targetPort = found.devicePort;
-      }
-    }
-
-    // If still not found, return deviceNotFound status
-    if (targetIp == null || targetPort == null) {
+    if (baseUri == null) {
       return SharedDeviceResponse.deviceNotFound(
-        message: 'Could not find device "$deviceId" on the network.',
+        requestId: requestId,
+        message: 'Could not resolve server address for device "$deviceId"',
       );
     }
 
-    return sendToAddress(
-      targetIp,
-      targetPort,
-      message,
-      targetDeviceId: deviceId,
+    final reqId = requestId ?? RequestIdGenerator.generate();
+    final commandName = message is Map && message.containsKey('command')
+        ? message['command'].toString()
+        : 'COMMAND';
+
+    final request = SharedDeviceRequest(
+      requestId: reqId,
+      deviceId: deviceId,
+      command: commandName,
+      data: message,
+    );
+
+    return await _transport.sendCommand(
+      baseUri,
+      deviceId,
+      request,
       pairKey: pairKey,
       timeout: timeout,
     );
   }
 
-  /// Alias for [sendToDevice] to support alternative spelling.
+  /// Alias for [sendToDevice] to preserve backward compatibility with v0.0.1 typo.
   Future<SharedDeviceResponse> sendToDeivce(
     String deviceId,
     dynamic message, {
     String? pairKey,
     Duration? timeout,
     SharedDevice? targetDevice,
+    SharedDeviceServer? targetServer,
     String? ip,
     int? port,
-  }) => sendToDevice(
-    deviceId,
-    message,
-    pairKey: pairKey,
-    timeout: timeout,
-    targetDevice: targetDevice,
-    ip: ip,
-    port: port,
-  );
+    String? requestId,
+  }) =>
+      sendToDevice(
+        deviceId,
+        message,
+        pairKey: pairKey,
+        timeout: timeout,
+        targetDevice: targetDevice,
+        targetServer: targetServer,
+        ip: ip,
+        port: port,
+        requestId: requestId,
+      );
 
-  /// Sends a message directly to an IP and Port with an incremental message ID and waits for ACK.
+  /// Sends raw or formatted binary content (e.g. image, PDF, ESC/POS byte array) to a peripheral.
+  Future<SharedDeviceResponse> sendBinaryToDevice(
+    String deviceId,
+    List<int> bytes, {
+    String contentType = 'application/octet-stream',
+    String? fileName,
+    String? pairKey,
+    Duration? timeout,
+    SharedDevice? targetDevice,
+    SharedDeviceServer? targetServer,
+    String? ip,
+    int? port,
+    String? requestId,
+  }) async {
+    var baseUri = _resolveTargetUri(
+      deviceId: deviceId,
+      targetDevice: targetDevice,
+      targetServer: targetServer,
+      ip: ip,
+      port: port,
+    );
+
+    if (baseUri == null && _discovery.isSupported) {
+      try {
+        final discovered = await discoverDevicesOnce(
+          timeout: const Duration(seconds: 2),
+        );
+        final match = discovered.where((d) => d.deviceId == deviceId).firstOrNull;
+        if (match != null && match.deviceIp.isNotEmpty && match.devicePort > 0) {
+          baseUri = Uri(scheme: 'http', host: match.deviceIp, port: match.devicePort);
+        }
+      } catch (_) {}
+    }
+
+    if (baseUri == null) {
+      return SharedDeviceResponse.deviceNotFound(
+        requestId: requestId,
+        message: 'Could not resolve server address for device "$deviceId"',
+      );
+    }
+
+    final reqId = requestId ?? RequestIdGenerator.generate();
+
+    return await _transport.sendBinary(
+      baseUri,
+      deviceId,
+      bytes,
+      contentType: contentType,
+      fileName: fileName,
+      requestId: reqId,
+      pairKey: pairKey,
+      timeout: timeout,
+    );
+  }
+
+  /// Sends a file via `multipart/form-data` to a peripheral device.
+  Future<SharedDeviceResponse> sendMultipartToDevice(
+    String deviceId,
+    List<int> bytes, {
+    required String fileName,
+    String fieldName = 'file',
+    String? pairKey,
+    Duration? timeout,
+    SharedDevice? targetDevice,
+    SharedDeviceServer? targetServer,
+    String? ip,
+    int? port,
+    String? requestId,
+  }) async {
+    var baseUri = _resolveTargetUri(
+      deviceId: deviceId,
+      targetDevice: targetDevice,
+      targetServer: targetServer,
+      ip: ip,
+      port: port,
+    );
+
+    if (baseUri == null && _discovery.isSupported) {
+      try {
+        final discovered = await discoverDevicesOnce(
+          timeout: const Duration(seconds: 2),
+        );
+        final match = discovered.where((d) => d.deviceId == deviceId).firstOrNull;
+        if (match != null && match.deviceIp.isNotEmpty && match.devicePort > 0) {
+          baseUri = Uri(scheme: 'http', host: match.deviceIp, port: match.devicePort);
+        }
+      } catch (_) {}
+    }
+
+    if (baseUri == null) {
+      return SharedDeviceResponse.deviceNotFound(
+        requestId: requestId,
+        message: 'Could not resolve server address for device "$deviceId"',
+      );
+    }
+
+    final reqId = requestId ?? RequestIdGenerator.generate();
+
+    return await _transport.sendMultipart(
+      baseUri,
+      deviceId,
+      bytes,
+      fileName: fileName,
+      fieldName: fieldName,
+      requestId: reqId,
+      pairKey: pairKey,
+      timeout: timeout,
+    );
+  }
+
+  /// Sends a command directly to a host IP and port.
   Future<SharedDeviceResponse> sendToAddress(
     String ip,
     int port,
@@ -382,71 +605,88 @@ class SharedDeviceNetworkClient {
     String? targetDeviceId,
     String? pairKey,
     Duration? timeout,
+    String? requestId,
+    bool isSecure = false,
   }) async {
-    await _ensureSocket();
+    final scheme = isSecure ? 'https' : 'http';
+    final baseUri = Uri(scheme: scheme, host: ip, port: port);
+    final devId = targetDeviceId ?? 'default';
 
-    final actualTimeout = timeout ?? defaultTimeout;
-    final messageId = _idGenerator.next();
-
-    final packet = NetworkPacket.message(
-      messageId: messageId,
-      senderDeviceId: deviceId,
-      senderDeviceName: deviceName,
-      targetDeviceId: targetDeviceId,
-      pairKey: pairKey,
-      payload: message,
-      replyPort: _socket!.port,
+    final reqId = requestId ?? RequestIdGenerator.generate();
+    final request = SharedDeviceRequest(
+      requestId: reqId,
+      deviceId: devId,
+      command: 'COMMAND',
+      data: message,
     );
 
-    final completer = Completer<SharedDeviceResponse>();
-    _pendingAcks[messageId] = completer;
-
-    // Timeout timer
-    final timer = Timer(actualTimeout, () {
-      final pending = _pendingAcks.remove(messageId);
-      if (pending != null && !pending.isCompleted) {
-        pending.complete(
-          SharedDeviceResponse.timeout(
-            message:
-                'Timed out waiting for ACK from $ip:$port for message ID #$messageId',
-            timeout: actualTimeout,
-          ),
-        );
-      }
-    });
-
-    try {
-      final bytes = packet.toUtf8Bytes();
-      final destination = InternetAddress(ip);
-      _socket!.send(bytes, destination, port);
-
-      final status = await completer.future;
-      timer.cancel();
-      return status;
-    } catch (e) {
-      timer.cancel();
-      _pendingAcks.remove(messageId);
-      return SharedDeviceResponse.error(
-        e.toString(),
-        message: 'Failed to send UDP datagram to $ip:$port',
-      );
-    }
+    return await _transport.sendCommand(
+      baseUri,
+      devId,
+      request,
+      pairKey: pairKey,
+      timeout: timeout,
+    );
   }
 
-  /// Closes client socket and clears resources.
-  Future<void> dispose() async {
-    _isInitialized = false;
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
 
-    for (final completer in _pendingAcks.values) {
-      if (!completer.isCompleted) {
-        completer.complete(SharedDeviceResponse.error('Client disposed'));
-      }
+  Uri? _resolveTargetUri({
+    required String deviceId,
+    SharedDevice? targetDevice,
+    SharedDeviceServer? targetServer,
+    String? ip,
+    int? port,
+  }) {
+    // 1. Explicit ip and port
+    if (ip != null && ip.isNotEmpty && port != null && port > 0) {
+      return Uri(scheme: 'http', host: ip, port: port);
     }
-    _pendingAcks.clear();
 
-    try {
-      _socket?.close();
-    } catch (_) {}
-    _socket = null;
+    // 2. targetDevice host/port
+    if (targetDevice != null &&
+        targetDevice.deviceIp.isNotEmpty &&
+        targetDevice.devicePort > 0) {
+      return Uri(
+        scheme: 'http',
+        host: targetDevice.deviceIp,
+        port: targetDevice.devicePort,
+      );
+    }
+
+    // 3. Cached device in _knownDevices (with tagged IP & port)
+    final cachedDev = _knownDevices[deviceId];
+    if (cachedDev != null &&
+        cachedDev.deviceIp.isNotEmpty &&
+        cachedDev.devicePort > 0) {
+      return Uri(
+        scheme: 'http',
+        host: cachedDev.deviceIp,
+        port: cachedDev.devicePort,
+      );
+    }
+
+    // 4. Explicit targetServer
+    if (targetServer != null) {
+      return targetServer.baseUri;
+    }
+
+    // 5. Current active server
+    if (_currentServer != null) {
+      return _currentServer!.baseUri;
+    }
+
+    return null;
+  }
+
+  /// Closes client HTTP session and releases discovery resources.
+  Future<void> dispose() async {
+    _transport.dispose();
+    await _discovery.dispose();
+    _knownServers.clear();
+    _knownDevices.clear();
+    _currentServer = null;
   }
 }
