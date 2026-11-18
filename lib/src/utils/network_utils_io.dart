@@ -8,10 +8,15 @@ class NetworkUtilsPlatform {
   }) async {
     final addresses = <String>[];
     try {
-      final interfaces = await NetworkInterface.list(
-        includeLoopback: includeLoopback,
-        type: InternetAddressType.IPv4,
-      );
+      final interfaces = [
+        ...await NetworkInterface.list(
+          includeLoopback: includeLoopback,
+          type: InternetAddressType.IPv4,
+        ),
+      ];
+      // Wi-Fi/Ethernet first: mobile-data interfaces (rmnet, ccmni, pdp...) are not
+      // reachable from the shop LAN, so they must not become the "primary" address.
+      interfaces.sort((a, b) => lanRank(a.name).compareTo(lanRank(b.name)));
 
       for (final interface in interfaces) {
         for (final address in interface.addresses) {
@@ -32,6 +37,10 @@ class NetworkUtilsPlatform {
 
     return addresses;
   }
+
+  /// 0 for Wi-Fi/Ethernet interface names (wlan0, wlp2s0, en0, eth0, "Wi-Fi", "Ethernet"), else 1.
+  static int lanRank(String interfaceName) =>
+      RegExp(r'^(wlan|wl|wi|eth|en)', caseSensitive: false).hasMatch(interfaceName) ? 0 : 1;
 
   /// Retrieves the primary local IPv4 address string (e.g. `192.168.1.100`).
   static Future<String> getPrimaryLocalIPv4({

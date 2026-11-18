@@ -36,7 +36,11 @@ class SharedDeviceNetworkClient {
   /// Human-readable name of this client device.
   final String clientName;
 
-  /// Default timeout waiting for HTTP responses.
+  /// Default timeout waiting for HTTP responses (default 20s).
+  ///
+  /// Must cover the host's whole job: a sleeping Bluetooth Classic printer alone
+  /// can take ~5s to connect. A shorter timeout reports printed jobs as failed,
+  /// and a naive retry then prints twice. Unreachable hosts still fail fast.
   final Duration defaultTimeout;
 
   /// Default mDNS service type to discover (default: `_shared-device._tcp`).
@@ -59,11 +63,8 @@ class SharedDeviceNetworkClient {
     String? deviceId,
     String? deviceName,
     this.clientName = 'SharedDeviceClient',
-    this.defaultTimeout = const Duration(seconds: 8),
+    this.defaultTimeout = const Duration(seconds: 20),
     this.defaultServiceType = kDefaultServiceType,
-    this.discoveryPort = 5353,
-    this.defaultServerPort = 8080,
-    int clientPort = 0,
     HttpClientTransport? transport,
     DiscoveryProvider? discovery,
   })  : clientId = clientId ?? deviceId ?? 'client_${RequestIdGenerator.generate().substring(4)}',
@@ -79,12 +80,6 @@ class SharedDeviceNetworkClient {
 
   /// Human-readable name of this client device (backward-compatibility alias for [clientName]).
   String get deviceName => clientName;
-
-  /// Default discovery port (backward-compatibility getter).
-  final int discoveryPort;
-
-  /// Default server port (backward-compatibility getter).
-  final int defaultServerPort;
 
   /// The currently selected server, if any.
   SharedDeviceServer? get currentServer => _currentServer;
@@ -413,53 +408,30 @@ class SharedDeviceNetworkClient {
     String? ip,
     int? port,
     String? requestId,
-  }) async {
-    var baseUri = _resolveTargetUri(
-      deviceId: deviceId,
-      targetDevice: targetDevice,
-      targetServer: targetServer,
-      ip: ip,
-      port: port,
-    );
-
-    // If still not resolved and discovery is supported, attempt quick discovery
-    if (baseUri == null && _discovery.isSupported) {
-      try {
-        final discovered = await discoverDevicesOnce(
-          timeout: const Duration(seconds: 2),
-        );
-        final match = discovered.where((d) => d.deviceId == deviceId).firstOrNull;
-        if (match != null && match.deviceIp.isNotEmpty && match.devicePort > 0) {
-          baseUri = Uri(scheme: 'http', host: match.deviceIp, port: match.devicePort);
-        }
-      } catch (_) {}
-    }
-
-    if (baseUri == null) {
-      return SharedDeviceResponse.deviceNotFound(
-        requestId: requestId,
-        message: 'Could not resolve server address for device "$deviceId"',
-      );
-    }
-
-    final reqId = requestId ?? RequestIdGenerator.generate();
+  }) {
     final commandName = message is Map && message.containsKey('command')
         ? message['command'].toString()
         : 'COMMAND';
 
-    final request = SharedDeviceRequest(
-      requestId: reqId,
-      deviceId: deviceId,
-      command: commandName,
-      data: message,
-    );
-
-    return await _transport.sendCommand(
-      baseUri,
+    return _send(
       deviceId,
-      request,
-      pairKey: pairKey,
-      timeout: timeout,
+      targetDevice: targetDevice,
+      targetServer: targetServer,
+      ip: ip,
+      port: port,
+      requestId: requestId,
+      send: (baseUri, reqId) => _transport.sendCommand(
+        baseUri,
+        deviceId,
+        SharedDeviceRequest(
+          requestId: reqId,
+          deviceId: deviceId,
+          command: commandName,
+          data: message,
+        ),
+        pairKey: pairKey,
+        timeout: timeout,
+      ),
     );
   }
 
@@ -500,45 +472,24 @@ class SharedDeviceNetworkClient {
     String? ip,
     int? port,
     String? requestId,
-  }) async {
-    var baseUri = _resolveTargetUri(
-      deviceId: deviceId,
+  }) {
+    return _send(
+      deviceId,
       targetDevice: targetDevice,
       targetServer: targetServer,
       ip: ip,
       port: port,
-    );
-
-    if (baseUri == null && _discovery.isSupported) {
-      try {
-        final discovered = await discoverDevicesOnce(
-          timeout: const Duration(seconds: 2),
-        );
-        final match = discovered.where((d) => d.deviceId == deviceId).firstOrNull;
-        if (match != null && match.deviceIp.isNotEmpty && match.devicePort > 0) {
-          baseUri = Uri(scheme: 'http', host: match.deviceIp, port: match.devicePort);
-        }
-      } catch (_) {}
-    }
-
-    if (baseUri == null) {
-      return SharedDeviceResponse.deviceNotFound(
-        requestId: requestId,
-        message: 'Could not resolve server address for device "$deviceId"',
-      );
-    }
-
-    final reqId = requestId ?? RequestIdGenerator.generate();
-
-    return await _transport.sendBinary(
-      baseUri,
-      deviceId,
-      bytes,
-      contentType: contentType,
-      fileName: fileName,
-      requestId: reqId,
-      pairKey: pairKey,
-      timeout: timeout,
+      requestId: requestId,
+      send: (baseUri, reqId) => _transport.sendBinary(
+        baseUri,
+        deviceId,
+        bytes,
+        contentType: contentType,
+        fileName: fileName,
+        requestId: reqId,
+        pairKey: pairKey,
+        timeout: timeout,
+      ),
     );
   }
 
@@ -555,45 +506,24 @@ class SharedDeviceNetworkClient {
     String? ip,
     int? port,
     String? requestId,
-  }) async {
-    var baseUri = _resolveTargetUri(
-      deviceId: deviceId,
+  }) {
+    return _send(
+      deviceId,
       targetDevice: targetDevice,
       targetServer: targetServer,
       ip: ip,
       port: port,
-    );
-
-    if (baseUri == null && _discovery.isSupported) {
-      try {
-        final discovered = await discoverDevicesOnce(
-          timeout: const Duration(seconds: 2),
-        );
-        final match = discovered.where((d) => d.deviceId == deviceId).firstOrNull;
-        if (match != null && match.deviceIp.isNotEmpty && match.devicePort > 0) {
-          baseUri = Uri(scheme: 'http', host: match.deviceIp, port: match.devicePort);
-        }
-      } catch (_) {}
-    }
-
-    if (baseUri == null) {
-      return SharedDeviceResponse.deviceNotFound(
-        requestId: requestId,
-        message: 'Could not resolve server address for device "$deviceId"',
-      );
-    }
-
-    final reqId = requestId ?? RequestIdGenerator.generate();
-
-    return await _transport.sendMultipart(
-      baseUri,
-      deviceId,
-      bytes,
-      fileName: fileName,
-      fieldName: fieldName,
-      requestId: reqId,
-      pairKey: pairKey,
-      timeout: timeout,
+      requestId: requestId,
+      send: (baseUri, reqId) => _transport.sendMultipart(
+        baseUri,
+        deviceId,
+        bytes,
+        fileName: fileName,
+        fieldName: fieldName,
+        requestId: reqId,
+        pairKey: pairKey,
+        timeout: timeout,
+      ),
     );
   }
 
@@ -632,6 +562,59 @@ class SharedDeviceNetworkClient {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /// Resolves the host for [deviceId] (discovering it if unknown) and calls [send].
+  ///
+  /// If the host is unreachable (503) at an address we did not get explicitly,
+  /// e.g. its Wi-Fi IP changed, rediscovers once and retries with the same
+  /// requestId, so the server's idempotency cache prevents double execution.
+  Future<SharedDeviceResponse> _send(
+    String deviceId, {
+    SharedDevice? targetDevice,
+    SharedDeviceServer? targetServer,
+    String? ip,
+    int? port,
+    String? requestId,
+    required Future<SharedDeviceResponse> Function(Uri baseUri, String requestId) send,
+  }) async {
+    final reqId = requestId ?? RequestIdGenerator.generate();
+    final baseUri = _resolveTargetUri(
+          deviceId: deviceId,
+          targetDevice: targetDevice,
+          targetServer: targetServer,
+          ip: ip,
+          port: port,
+        ) ??
+        await _rediscover(deviceId);
+
+    if (baseUri == null) {
+      return SharedDeviceResponse.deviceNotFound(
+        requestId: reqId,
+        message: 'Could not resolve server address for device "$deviceId"',
+      );
+    }
+
+    final response = await send(baseUri, reqId);
+    final explicitAddress = ip != null && port != null;
+    if (response.statusCode != 503 || explicitAddress) return response;
+
+    final freshUri = await _rediscover(deviceId);
+    if (freshUri == null || freshUri == baseUri) return response;
+    return send(freshUri, reqId);
+  }
+
+  /// Runs a short mDNS scan and returns the current address hosting [deviceId].
+  Future<Uri?> _rediscover(String deviceId) async {
+    if (!_discovery.isSupported) return null;
+    try {
+      final found = await discoverDevicesOnce(timeout: const Duration(seconds: 2));
+      final match = found.where((d) => d.deviceId == deviceId).firstOrNull;
+      if (match != null && match.deviceIp.isNotEmpty && match.devicePort > 0) {
+        return Uri(scheme: 'http', host: match.deviceIp, port: match.devicePort);
+      }
+    } catch (_) {}
+    return null;
+  }
 
   Uri? _resolveTargetUri({
     required String deviceId,

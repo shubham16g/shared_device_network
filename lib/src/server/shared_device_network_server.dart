@@ -47,6 +47,7 @@ class SharedDeviceNetworkServer {
   final Map<String, dynamic> metadata;
 
   final Map<String, SharedDeviceRecord> _devices = {};
+  final Map<String, Future<void>> _deviceQueues = {};
   final IdempotencyManager _idempotencyManager;
   final ServerTransport _transport;
   final DiscoveryProvider _discovery;
@@ -89,10 +90,6 @@ class SharedDeviceNetworkServer {
 
   /// Active listening HTTP port.
   int? get port => _transport.port;
-
-  /// Standard mDNS discovery port (5353) or configured port (backward compatibility getter).
-  int get discoveryPort => _discoveryPort ?? 5353;
-  int? _discoveryPort;
 
   /// Bound host address.
   String? get host => _transport.host;
@@ -185,10 +182,7 @@ class SharedDeviceNetworkServer {
     String host = '0.0.0.0',
     bool advertise = true,
     String serviceType = kDefaultServiceType,
-    int? discoveryPort,
-    int? discoverPort,
   }) async {
-    _discoveryPort = discoveryPort ?? discoverPort;
     if (_transport.isRunning) {
       return;
     }
@@ -237,12 +231,13 @@ class SharedDeviceNetworkServer {
   /// Stops the HTTP server and unregisters mDNS advertisement.
   Future<void> stop() async {
     _startedAt = null;
+    // HTTP first: the port must be freed even if the mDNS platform call hangs.
     try {
-      await _discovery.stopBroadcast();
+      await _transport.stop();
     } catch (_) {}
 
     try {
-      await _transport.stop();
+      await _discovery.stopBroadcast();
     } catch (_) {}
   }
 
@@ -275,35 +270,20 @@ class SharedDeviceNetworkServer {
     };
   }
 
-  List<Map<String, dynamic>> _handleGetDevices() {
-    final hostIp = _transport.host ?? '127.0.0.1';
-    final portNum = _transport.port ?? 8080;
+  // `host` is what the client used to reach us; the bind address (e.g. 0.0.0.0) is not connectable.
+  List<Map<String, dynamic>> _handleGetDevices(String host) => _devices.values
+      .map((r) => r.toPublicDevice(host: host, port: _transport.port!).toMap())
+      .toList();
 
-    return _devices.values
-        .map(
-          (record) => record
-              .toPublicDevice(
-                host: hostIp,
-                port: portNum,
-              )
-              .toMap(),
-        )
-        .toList();
-  }
+  Map<String, dynamic>? _handleGetDeviceLookup(String deviceId, String host) =>
+      _devices[deviceId]?.toPublicDevice(host: host, port: _transport.port!).toMap();
 
-  Map<String, dynamic>? _handleGetDeviceLookup(String deviceId) {
-    final record = _devices[deviceId];
-    if (record == null) return null;
-
-    final hostIp = _transport.host ?? '127.0.0.1';
-    final portNum = _transport.port ?? 8080;
-
-    return record
-        .toPublicDevice(
-          host: hostIp,
-          port: portNum,
-        )
-        .toMap();
+  /// Runs [action] after every earlier job for [deviceId] finished, so one
+  /// physical device (e.g. a shared printer) never gets interleaved jobs.
+  Future<T> _serialized<T>(String deviceId, Future<T> Function() action) {
+    final result = (_deviceQueues[deviceId] ?? Future.value()).then((_) => action());
+    _deviceQueues[deviceId] = result.then((_) {}, onError: (_) {});
+    return result;
   }
 
   Future<SharedDeviceResponse> _handleIncomingCommand(
@@ -328,7 +308,7 @@ class SharedDeviceNetworkServer {
     }
 
     // Execute with idempotency tracking
-    return await _idempotencyManager.handleRequest(request.requestId, () async {
+    return await _idempotencyManager.handleRequest(request.requestId, () => _serialized(deviceId, () async {
       final handler = _onMessageReceived;
       if (handler == null) {
         return SharedDeviceResponse.deviceNotFound(
@@ -347,7 +327,7 @@ class SharedDeviceNetworkServer {
           message: 'Exception occurred processing command for device "$deviceId"',
         );
       }
-    });
+    }));
   }
 
   Future<SharedDeviceResponse> _handleIncomingBinary(
@@ -373,7 +353,7 @@ class SharedDeviceNetworkServer {
       );
     }
 
-    return await _idempotencyManager.handleRequest(requestId, () async {
+    return await _idempotencyManager.handleRequest(requestId, () => _serialized(deviceId, () async {
       final handler = _onBinaryReceived;
       if (handler == null) {
         return SharedDeviceResponse.deviceNotFound(
@@ -398,7 +378,7 @@ class SharedDeviceNetworkServer {
           message: 'Exception occurred processing binary for device "$deviceId"',
         );
       }
-    });
+    }));
   }
 
   bool _validatePairKey(SharedDeviceRecord device, String? authHeader) {

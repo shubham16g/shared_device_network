@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_device_network/shared_device_network.dart';
 import 'package:shared_device_network/src/discovery/discovery_provider_interface.dart';
 import 'package:shared_device_network/src/discovery/discovery_provider_web.dart';
 import 'package:shared_device_network/src/models/shared_device_server.dart';
 import 'package:shared_device_network/src/server/server_transport_web.dart';
+import 'package:shared_device_network/src/utils/network_utils_io.dart';
 
 /// Mock DiscoveryProvider for deterministic in-memory tests
 class MockDiscoveryProvider implements DiscoveryProvider {
@@ -349,6 +352,59 @@ void main() {
       expect(multiRes.isSuccess, isTrue);
       expect(receivedBinaryBytes, multipartBytes);
       expect(receivedFileName, 'logo.png');
+      // The file part's type, not the multipart/form-data envelope.
+      expect(receivedContentType, 'application/octet-stream');
+    });
+
+    test('GET /devices reports the address the client used, not the 0.0.0.0 bind address', () async {
+      await server.addDevice('printer-01', 'Printer');
+      await server.start(port: testPort + 8, advertise: false); // binds 0.0.0.0
+
+      final res = await http.get(Uri.parse('http://127.0.0.1:${testPort + 8}/api/v1/devices'));
+      final dev = (json.decode(res.body)['devices'] as List).single as Map;
+      expect(dev['deviceIp'], '127.0.0.1');
+
+      final one = await http.get(Uri.parse('http://127.0.0.1:${testPort + 8}/api/v1/devices/printer-01'));
+      expect((json.decode(one.body)['device'] as Map)['deviceIp'], '127.0.0.1');
+    });
+
+    test('Concurrent jobs for one device run one at a time, in order', () async {
+      final events = <String>[];
+      server.onMessageReceived((deviceId, message) async {
+        events.add('start ${message['n']}');
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+        events.add('end ${message['n']}');
+        return true;
+      });
+      await server.addDevice('printer-01', 'Printer');
+      await server.start(port: testPort + 9, host: '127.0.0.1', advertise: false);
+
+      final results = await Future.wait([
+        for (var n = 0; n < 3; n++)
+          client.sendToDevice('printer-01', {'n': n}, ip: '127.0.0.1', port: testPort + 9),
+      ]);
+      expect(results.every((r) => r.isSuccess), isTrue);
+      expect(events, hasLength(6));
+      for (var i = 0; i < 6; i += 2) {
+        expect(events[i + 1], events[i].replaceFirst('start', 'end'), reason: 'jobs overlapped: $events');
+      }
+    });
+
+    test('Failed responses are not cached, so a retry with the same requestId runs again', () async {
+      var attempts = 0;
+      server.onMessageReceived((deviceId, message) async {
+        attempts++;
+        return attempts == 1 ? SharedDeviceResponse.error('Printer offline') : true;
+      });
+      await server.addDevice('printer-01', 'Printer');
+      await server.start(port: testPort + 10, host: '127.0.0.1', advertise: false);
+
+      Future<SharedDeviceResponse> send() => client.sendToDevice('printer-01', {},
+          ip: '127.0.0.1', port: testPort + 10, requestId: 'req_retry_after_failure');
+      expect((await send()).isSuccess, isFalse);
+      expect((await send()).isSuccess, isTrue);
+      expect((await send()).isSuccess, isTrue); // now cached
+      expect(attempts, 2);
     });
 
     test('Error Handling: missing device returns 404', () async {
@@ -394,6 +450,38 @@ void main() {
   });
 
   group('Device Discovery & Multi-Host Tests', () {
+    test('Unreachable cached host: client rediscovers and retries once', () async {
+      final server = SharedDeviceNetworkServer();
+      var executions = 0;
+      server.onMessageReceived((deviceId, message) async {
+        executions++;
+        return true;
+      });
+      await server.addDevice('printer-01', 'Printer');
+      const livePort = 18896;
+      await server.start(port: livePort, host: '127.0.0.1', advertise: false);
+
+      final client = SharedDeviceNetworkClient(
+        discovery: MockDiscoveryProvider(mockServers: [
+          SharedDeviceServer(serverId: 'h', serverName: 'h', host: '127.0.0.1', port: livePort),
+        ]),
+      );
+      // Stale address, e.g. from a scan before the host's IP/port changed.
+      const stale = SharedDevice(
+        deviceId: 'printer-01',
+        deviceName: 'Printer',
+        deviceIp: '127.0.0.1',
+        devicePort: 18897, // nothing listening
+      );
+
+      final res = await client.sendToDevice('printer-01', {'print': 1}, targetDevice: stale);
+      expect(res.isSuccess, isTrue);
+      expect(executions, 1);
+
+      await server.dispose();
+      await client.dispose();
+    });
+
     test('Client discovers devices across network hosts with proper IP tagging', () async {
       final server = SharedDeviceNetworkServer();
       await server.addDevice(
@@ -458,6 +546,15 @@ void main() {
     });
   });
 
+  test('Primary address prefers Wi-Fi/Ethernet over mobile data interfaces', () {
+    for (final lan in ['wlan0', 'wlp2s0', 'en0', 'eth0', 'Wi-Fi', 'Ethernet']) {
+      expect(NetworkUtilsPlatform.lanRank(lan), 0, reason: lan);
+    }
+    for (final other in ['rmnet_data0', 'ccmni0', 'pdp_ip0', 'tun0']) {
+      expect(NetworkUtilsPlatform.lanRank(other), 1, reason: other);
+    }
+  });
+
   group('Web Platform Compatibility Stubs Tests', () {
     test('ServerTransportWeb throws UnsupportedPlatformException on start', () async {
       final webTransport = ServerTransportWeb();
@@ -471,10 +568,10 @@ void main() {
           corsPolicy: const CorsPolicy(),
           maxBodySizeBytes: 1024,
           onInfo: () => {},
-          onDevices: () => [],
-          onDeviceLookup: (_) => null,
-          onCommand: (_, __, ___) async => SharedDeviceResponse.success(),
-          onBinary: (_, __, {required contentType, fileName, requestId, authHeader}) async =>
+          onDevices: (_) => [],
+          onDeviceLookup: (_, _) => null,
+          onCommand: (_, _, _) async => SharedDeviceResponse.success(),
+          onBinary: (_, _, {required contentType, fileName, requestId, authHeader}) async =>
               SharedDeviceResponse.success(),
         ),
         throwsA(isA<UnsupportedPlatformException>()),

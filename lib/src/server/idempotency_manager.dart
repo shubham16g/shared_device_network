@@ -48,7 +48,9 @@ class IdempotencyManager {
   /// - If [requestId] is empty, executes [action] directly without caching.
   /// - If [requestId] has a cached response, returns it immediately without executing [action].
   /// - If [requestId] is already in-flight, returns HTTP 409 Conflict.
-  /// - Otherwise executes [action], caches the resulting response for [ttl], and returns it.
+  /// - Otherwise executes [action] and returns its response. Successful responses are
+  ///   cached for [ttl]; failures are not, so a retry (e.g. after the printer is
+  ///   reconnected) runs again instead of replaying the old error.
   Future<SharedDeviceResponse> handleRequest(
     String? requestId,
     Future<SharedDeviceResponse> Function() action,
@@ -77,7 +79,7 @@ class IdempotencyManager {
     _inFlight.add(id);
     try {
       final response = await action();
-      _cacheResponse(id, response);
+      if (response.isSuccess) _cacheResponse(id, response);
       return response;
     } finally {
       _inFlight.remove(id);

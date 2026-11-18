@@ -113,6 +113,7 @@ class HttpClientTransport {
         e.toString(),
         requestId: request.requestId,
         message: 'Failed to communicate with server at $uri',
+        statusCode: 503, // host unreachable, distinct from a server-side 500
       );
     }
   }
@@ -133,8 +134,8 @@ class HttpClientTransport {
 
     final headers = <String, String>{
       'Content-Type': contentType,
-      if (requestId != null) 'X-Request-Id': requestId,
-      if (fileName != null) 'X-File-Name': fileName,
+      'X-Request-Id': ?requestId,
+      'X-File-Name': ?fileName,
       if (pairKey != null && pairKey.isNotEmpty)
         'Authorization': 'Bearer $pairKey',
     };
@@ -162,6 +163,7 @@ class HttpClientTransport {
         e.toString(),
         requestId: requestId,
         message: 'Failed to upload binary to $uri',
+        statusCode: 503, // host unreachable, distinct from a server-side 500
       );
     }
   }
@@ -215,6 +217,7 @@ class HttpClientTransport {
         e.toString(),
         requestId: requestId,
         message: 'Failed to upload multipart to $uri',
+        statusCode: 503, // host unreachable, distinct from a server-side 500
       );
     }
   }

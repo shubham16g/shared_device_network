@@ -154,7 +154,7 @@ class HttpServerTransportIo implements ServerTransport {
 
       // GET /api/v1/devices
       if (subPath.length == 1 && subPath[0] == 'devices' && request.method == 'GET') {
-        final devices = onDevices();
+        final devices = onDevices(request.requestedUri.host);
         _sendRawJson(response, HttpStatus.ok, {'status': 200, 'devices': devices});
         return;
       }
@@ -162,7 +162,7 @@ class HttpServerTransportIo implements ServerTransport {
       // GET /api/v1/devices/:deviceId
       if (subPath.length == 2 && subPath[0] == 'devices' && request.method == 'GET') {
         final deviceId = Uri.decodeComponent(subPath[1]);
-        final dev = onDeviceLookup(deviceId);
+        final dev = onDeviceLookup(deviceId, request.requestedUri.host);
         if (dev != null) {
           _sendRawJson(response, HttpStatus.ok, {'status': 200, 'device': dev});
         } else {
@@ -354,7 +354,7 @@ class HttpServerTransportIo implements ServerTransport {
     final contentType = request.headers.contentType;
     final primaryType = contentType?.primaryType ?? 'application';
     final subType = contentType?.subType ?? 'octet-stream';
-    final mimeString = '$primaryType/$subType';
+    var mimeString = '$primaryType/$subType';
 
     List<int> fileBytes = [];
 
@@ -372,12 +372,18 @@ class HttpServerTransportIo implements ServerTransport {
       final transformer = MimeMultipartTransformer(boundary);
       final parts = transformer.bind(request);
 
+      var gotFile = false;
       await for (final part in parts) {
         final contentDisp = part.headers['content-disposition'] ?? '';
         final fnMatch = RegExp(r'filename="?([^";\r\n]+)"?').firstMatch(contentDisp);
-        if (fnMatch != null) {
-          fileName = fnMatch.group(1);
+        // Only the first file part is the payload; plain form fields and extra files are skipped.
+        if (fnMatch == null || gotFile) {
+          await part.drain<void>();
+          continue;
         }
+        gotFile = true;
+        fileName = fnMatch.group(1);
+        mimeString = part.headers['content-type'] ?? 'application/octet-stream';
 
         await for (final chunk in part) {
           fileBytes.addAll(chunk);
@@ -440,7 +446,8 @@ class HttpServerTransportIo implements ServerTransport {
       response.statusCode = statusCode;
       response.headers.contentType = ContentType.json;
       response.write(json.encode(jsonMap));
-      response.close();
+      // Client may have disconnected; don't surface that as an uncaught async error.
+      response.close().catchError((_) => null);
     } catch (_) {}
   }
 }

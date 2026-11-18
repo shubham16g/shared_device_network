@@ -5,8 +5,12 @@ import '../models/shared_device_response.dart';
 
 /// Callbacks supplied by the server engine to the network transport.
 typedef ServerInfoHandler = Map<String, dynamic> Function();
-typedef DeviceListHandler = List<Map<String, dynamic>> Function();
-typedef DeviceLookupHandler = Map<String, dynamic>? Function(String deviceId);
+/// [host] is the address the client used to reach this server (from the Host header).
+typedef DeviceListHandler = List<Map<String, dynamic>> Function(String host);
+typedef DeviceLookupHandler = Map<String, dynamic>? Function(
+  String deviceId,
+  String host,
+);
 typedef CommandHandler = Future<SharedDeviceResponse> Function(
   String deviceId,
   SharedDeviceRequest request,

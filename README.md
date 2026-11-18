@@ -47,7 +47,7 @@ A powerful Flutter and Dart package for local **mDNS / DNS-SD discovery**, **HTT
 - **📦 Binary & File Uploads**: Native support for images, PDFs, ESC/POS byte arrays, and multipart forms without base64 JSON bloat.
 - **🔁 Request IDs & Idempotency**: Automatic `requestId` generation and server-side response caching to prevent duplicate execution of critical commands (e.g. receipt printing, cash drawer triggering).
 - **🔐 Pair Key Authentication**: Secure device authorization via `Authorization: Bearer <pairKey>` or `X-Pair-Key`. Secrets are never logged or broadcast over mDNS.
-- **📱 Android Foreground Service**: Built-in support for continuous background server operation on Android.
+- **📱 Runs in the background**: The server is plain Dart, so it runs inside an Android foreground service. The [example app](example/) is a complete Bluetooth printer hub that keeps sharing with the screen off.
 - **🛡️ Configurable CORS**: Configurable cross-origin policies for serving browser clients.
 - **🔒 TLS / HTTPS Ready**: Pass a `SecurityContext` for encrypted communications where required.
 
@@ -74,17 +74,17 @@ flutter pub get
 
 ### Android
 
-Add local network, multicast, and foreground service permissions to `android/app/src/main/AndroidManifest.xml`:
+Add local network and multicast (mDNS) permissions to `android/app/src/main/AndroidManifest.xml`:
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
 </manifest>
 ```
+
+To keep a host running with the screen off, run the server in a foreground service; see the [example app](example/) (`flutter_foreground_task`, service type `connectedDevice`).
 
 ### iOS / macOS
 
@@ -235,6 +235,23 @@ final multiResponse = await client.sendMultipartToDevice(
 Every client request carries a unique `requestId`. The server tracks in-flight and recently executed requests:
 - **Duplicate in-flight request**: Server returns `HTTP 409 Conflict`.
 - **Retried completed request**: Server returns the cached `SharedDeviceResponse` immediately without re-executing peripheral actions (preventing double prints or accidental charges).
+- **Retried failed request**: Failures are *not* cached, so retrying with the same `requestId` (e.g. after the printer is switched back on) runs the job again.
+
+To retry safely after a timeout, pass the same `requestId` again:
+
+```dart
+final id = 'bill-${bill.id}';
+var res = await client.sendToDevice('printer-01', job, requestId: id);
+if (res.statusCode == 408) res = await client.sendToDevice('printer-01', job, requestId: id);
+```
+
+### Shared devices: one job at a time
+
+Commands and uploads for the **same** `deviceId` run strictly one after another on the host, so receipts from several staff phones never interleave on one printer. Different devices still run in parallel.
+
+The client's `defaultTimeout` is 20s because it has to cover the host's whole job, and a sleeping Bluetooth Classic printer can take ~5s just to connect. A shorter timeout reports printed jobs as failed. Unreachable hosts still fail fast.
+
+If a cached host stops answering (e.g. its Wi-Fi IP changed), `sendToDevice` / `sendBinaryToDevice` / `sendMultipartToDevice` rediscover the device once via mDNS and retry with the same `requestId`.
 
 ---
 

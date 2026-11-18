@@ -17,3 +17,6 @@ export 'src/server/shared_device_network_server.dart'
 
 // Client
 export 'src/client/shared_device_network_client.dart';
+
+// Utils
+export 'src/utils/network_utils.dart';

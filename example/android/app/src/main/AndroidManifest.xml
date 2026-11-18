@@ -1,40 +1,28 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Network permissions -->
+    <!-- LAN: HTTP server + mDNS discovery (multicast) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
-    
-    <!-- Bluetooth permissions for connected peripherals -->
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
 
-    <!-- Keep alive & background execution permissions -->
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Printer hub foreground service. Bluetooth, notification, wake-lock and
+         boot permissions are merged in by flutter_classic_bluetooth and
+         flutter_foreground_task. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Lets the hub ask to be exempt from battery optimization so Android does not kill it. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
-        android:label="shared_device_network_example"
+        android:label="Printer Hub"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
-        <!-- Declare BackgroundService with connectedDevice & dataSync types and stopWithTask=false to prevent killing on swipe -->
+        <!-- connectedDevice only: dataSync is capped at 6 h/day on Android 15 and
+             cannot be started on boot. Do not rename: flutter_foreground_task's service. -->
         <service
-            android:name="id.flutter.flutter_background_service.BackgroundService"
-            android:foregroundServiceType="connectedDevice|dataSync"
-            android:stopWithTask="false"
-            android:enabled="true"
-            android:exported="true" />
+            android:name="com.pravera.flutter_foreground_task.service.ForegroundService"
+            android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
 
         <activity
             android:name=".MainActivity"
