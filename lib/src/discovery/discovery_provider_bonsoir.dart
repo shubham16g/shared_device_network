@@ -157,17 +157,7 @@ class NativeDiscoveryProvider implements DiscoveryProvider {
 
   SharedDeviceServer? _parseDiscoveredService(BonsoirService service) {
     // Attempt to extract IP or hostname
-    String? host = service.hostAddress;
-    if (host == null || host.isEmpty || host == '0.0.0.0') {
-      if (service.hostAddresses.isNotEmpty) {
-        // Prefer IPv4
-        host = service.hostAddresses.firstWhere(
-          (addr) => !addr.contains(':'),
-          orElse: () => service.hostAddresses.first,
-        );
-      }
-    }
-    host ??= service.hostname;
+    final host = serviceHost(service);
     if (host == null || host.isEmpty) return null;
 
     final attrs = service.attributes;
@@ -201,6 +191,14 @@ class NativeDiscoveryProvider implements DiscoveryProvider {
   Future<void> dispose() async {
     await stopBroadcast();
   }
+}
+
+/// The address to reach a resolved [service] at. The server binds IPv4 only
+/// (`InternetAddress.anyIPv4`), and iOS and Android 14+ often list an IPv6 address
+/// first, so any IPv4 address wins.
+String? serviceHost(BonsoirService service) {
+  final addresses = service.hostAddresses.where((a) => a.isNotEmpty && a != '0.0.0.0');
+  return addresses.where((a) => !a.contains(':')).firstOrNull ?? addresses.firstOrNull ?? service.hostname;
 }
 
 /// Factory function for native platform.

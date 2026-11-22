@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:bonsoir/bonsoir.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_device_network/shared_device_network.dart';
+import 'package:shared_device_network/src/discovery/discovery_provider_bonsoir.dart' show serviceHost;
 import 'package:shared_device_network/src/discovery/discovery_provider_interface.dart';
 import 'package:shared_device_network/src/discovery/discovery_provider_web.dart';
 import 'package:shared_device_network/src/models/shared_device_server.dart';
@@ -553,6 +555,14 @@ void main() {
     for (final other in ['rmnet_data0', 'ccmni0', 'pdp_ip0', 'tun0']) {
       expect(NetworkUtilsPlatform.lanRank(other), 1, reason: other);
     }
+  });
+
+  test('Discovered service resolves to its IPv4 address, since the server binds IPv4 only', () {
+    BonsoirService at(List<String> addresses, [String? hostname]) =>
+        BonsoirService(name: 'h', type: '_x._tcp', port: 1, hostAddresses: addresses, hostname: hostname);
+    expect(serviceHost(at(['fe80::1%wlan0', '2001:db8::1', '192.168.1.5'])), '192.168.1.5');
+    expect(serviceHost(at(['0.0.0.0', 'fe80::1'])), 'fe80::1');
+    expect(serviceHost(at([], 'host.local')), 'host.local');
   });
 
   group('Web Platform Compatibility Stubs Tests', () {
